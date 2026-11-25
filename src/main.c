@@ -25,11 +25,14 @@
 #include "esp_private/msc_scsi_bot.h"
 #include "ff.h"
 #include "diskio.h"
+#include "local_storage.h"
 
-// ESP-IDF 5.4 FatFS is writable. Linker --wrap intercepts all FatFS sector writes.
-// Do not call raw MSC write APIs; this barrier protects the filesystem path.
+// Fail closed: only the mounted local SD's registered drive may write.
+// USB and unknown drives remain protected, regardless of mount order.
+DRESULT __real_ff_disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count);
 DRESULT __wrap_ff_disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count) {
-    ESP_LOGE("write_guard", "Blocked FatFS disk write");
+    if (local_storage_write_allowed(pdrv)) return __real_ff_disk_write(pdrv, buff, sector, count);
+    ESP_LOGE("write_guard", "Blocked source/unknown drive write pdrv=%u", pdrv);
     return RES_WRPRT;
 }
 
@@ -161,9 +164,21 @@ static void attach(uint8_t addr) {
     else LOG("No JPEG discovered");
 }
 static void status(void) { LOG("STATUS address=%u installed=%d mounted=%d removed=%d WATCH=%d uptime_ms=%lld",address,disk!=NULL,vfs!=NULL,removed,watch,(long long)(esp_timer_get_time()/1000)); }
+static bool source_available(void) { return vfs && disk && !removed; }
 static void command(char *line) {
     char *arg=strchr(line,' '); if(arg) { *arg++=0; while(*arg==' ')arg++; }
-    if (!strcasecmp(line,"HELP")) LOG("HELP | STATUS | SCAN | READ /usb/path (or first JPEG) | RESET | REINIT | WATCH [ON|OFF]");
+    if (!strcasecmp(line,"HELP")) LOG("HELP | STATUS | SCAN | READ /usb/path | RESET | REINIT | WATCH [ON|OFF] | SDMOUNT | SDSTATUS | SDSCAN | COPY /usb/file | COPYALL");
+    else if (!strcasecmp(line,"SDMOUNT")) local_storage_mount();
+    else if (!strcasecmp(line,"SDSTATUS")) local_storage_status();
+    else if (!strcasecmp(line,"SDSCAN")) local_storage_scan();
+    else if (!strcasecmp(line,"COPY") || !strcasecmp(line,"COPYALL")) {
+        if (!source_available()) LOG("COPY requires mounted USB source");
+        else if (!strcasecmp(line,"COPY") && (!arg || !*arg)) LOG("Use COPY /usb/path/to/file");
+        else if (!local_storage_copy(!strcasecmp(line,"COPYALL") ? "/usb" : arg, source_available)) {
+            LOG("COPY aborted; releasing USB mount before further attempts");
+            release_disk();
+        }
+    }
     else if (!strcasecmp(line,"STATUS")) status();
     else if (!strcasecmp(line,"SCAN")) { if(vfs&&!removed) { scan("/usb",0); LOG("Storage scan %s", removed ? "interrupted" : "complete"); } else LOG("No mounted storage"); }
     else if (!strcasecmp(line,"READ")) read_file(arg&&*arg?arg:first_jpeg);
@@ -177,6 +192,7 @@ void app_main(void) {
     int input_flags = fcntl(STDIN_FILENO, F_GETFL);
     if (input_flags >= 0) fcntl(STDIN_FILENO, F_SETFL, input_flags | O_NONBLOCK);
     LOG("StoneLink USB diagnostics; timestamps are boot milliseconds; no VBUS switching");
+    local_storage_mount();
     events=xQueueCreate(16,sizeof(msc_host_event_t));
     if (!events) { ESP_LOGE(TAG,"Cannot allocate event queue"); return; }
     usb_host_config_t host={.skip_phy_setup=false,.intr_flags=ESP_INTR_FLAG_LEVEL1};

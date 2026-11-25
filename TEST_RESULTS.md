@@ -282,3 +282,53 @@ User supplies continuous WATCH log from 225815 through 316705 ms while following
 Confirmed: installed/mounted storage and serialized sector-zero reads remain available throughout this approximately 91-second armed-idle sample. The excerpt contains no READ completion/CRC line; prior armed-state complete read remains user-reported rather than directly evidenced by supplied read log. Successful sector-zero probes alone do not prove a new camera photo was saved or guarantee filesystem consistency during writes.
 
 Next single-variable experiment: retain camera armed, external USB 5 V and WATCH; trigger one motion event, move outside detection area, observe for 30 seconds without resets or power changes. Record first error or persistent successful probes; subsequently verify whether camera actually captured a new photo before drawing capture-arbitration conclusions. Avoid SCAN of a potentially stale live mount until remount strategy is chosen from observed behavior.
+
+### Motion-event experiment: previously stable armed USB access stalls and does not automatically recover
+
+Following the one-motion-event instructions, supplied log shows last successful WATCH probe at 365185 ms, stalled transfer (Status 4) at 367205 ms, canceled transfer and failed sector-zero read at 372205 ms, media_readable=0 at 372215 ms. Subsequent STATUS retains address=2 removed=0 but installed=0 mounted=0. Repeated inquiry/sense/transport failures continue through 437755 ms, over 70 seconds after first stall. No detach or successful remount/read appears.
+
+Interpretation: in the reported motion-test context USB storage access was interrupted and firmware did not recover automatically during supplied interval. Actual motion timestamp and successful camera capture/new-file existence are not yet independently established; do not label this a proven completed photograph write or attribute failure exclusively to ownership arbitration. This repeats the stalled-transport state seen during camera startup, now after a stable armed-idle interval.
+
+Next single variable: retain camera armed, card inserted, external USB 5 V on; remain out of detection area and run REINIT once after this idle interval. Observe fresh host mount/read versus continued failure, without camera power or USB supply changes. If access returns, inspect freshly mounted listing for new camera file and record actual READ evidence.
+
+### Post-motion REINIT failure directly logged; USB-power-cycle outcome not yet evidenced
+
+New attachment starts with earlier failures then explicit REINIT at 488155 ms. After software reboot host initializes at 335 ms, enumerates at 735 ms and MSC attaches at 825 ms; first inquiry stalls at 835 ms, canceled transfer/internal error at 5835 ms, then general transfer errors and ESP_ERR_INVALID_STATE through 25915 ms. No mount/read succeeds. This directly supports user's preceding report that post-motion REINIT failed.
+
+Although supplied after USB-power-cycle instructions, this excerpt contains no subsequent USB-removal/reconnection sequence or power-action annotation; do not classify it as a failed USB-power-cycle trial. Clarify whether user has performed external USB 5 V off/on since the shown reboot, or is supplying the earlier REINIT log. Preserve camera-armed state and avoid additional resets until the next single-variable action is established.
+
+### Post-motion external USB 5 V cycle restores armed camera-installed access
+
+User supplies log after confirming 5 V and following USB-cycle-only instructions (camera remains armed, adapter retained, ESP32 running). USB removal at 76365 ms, new address-2 connection at 78365 ms, storage ready/FAT mount at 79375 ms. The 2.000-second USB event gap does not independently establish supply-off duration or full internal power loss.
+
+Fresh listing differs from earlier seven-photo baseline: original DSCF0001.JPG 2,200,997 bytes; DSCF0002.MP4 6,597,557 bytes; DCIM/sync0.dat and sync1.dat 46 bytes each; cell_std JPEG 31,972 bytes and same-named MP4 212,565 bytes; cell_hd JPEG 351,414 bytes. At 90255 ms original JPEG read completes: 2,200,997 bytes, CRC32 2508205a. This is a different file content/size from earlier DSCF0001.JPG baseline c65327a4; do not classify the different checksum as corruption or assume the newly listed MP4 was specifically produced by the last motion event without a matching pre-event listing/capture-mode confirmation.
+
+Confirmed in current reported setup: after motion-associated USB stalls and failed REINIT, cycling external USB 5 V re-enumerates, freshly mounts and completely reads a JPEG while camera remains armed and card inserted. This supplies logged mount/READ evidence for armed installed access under user's controlled-test conditions. No sustained camera writes/USB-read consistency or electrical isolation guarantee is inferred.
+
+Next: read the original DSCF0002.MP4 while retaining armed idle setup to establish complete video retrieval; ask camera capture mode to relate the video to the motion experiment. Then repeat a motion/recovery trial with pre/post fresh listings to establish capture timing and repeatability. Candidate design is storage retrieval during armed idle with USB-side power-cycle recovery after camera activity; GPIO VBUS hardware remains unavailable and must not be implemented yet.
+
+### Fresh remount reveals added DSCF0003.MP4
+
+Latest supplied log begins with tail of older scan, then WATCH failure (stall at 326865 ms, media_readable=0 at 331875 ms), failed automatic retries, WATCH OFF, and No mounted storage at 362005 ms. Removal at 383745 ms and new address-3 connection at 385625 ms lead to FAT mount at 386635 ms. Exact physical actions during this interval were not annotated; do not independently attribute detach/reconnect to a specific action without user confirmation.
+
+Comparison with preceding successful fresh listing: new /usb/DCIM/100MEDIA/DSCF0003.MP4, 6,754,937 bytes, mtime 1795622378; new /usb/cell_std/100MEDIA/DSCF0003.MP4, 279,139 bytes, mtime 1795622376. Earlier DSCF0001.JPG and DSCF0002.MP4 remain unchanged in listed size; sync0.dat/sync1.dat timestamps advance. No additional JPEG appears. Original DSCF0001.JPG complete READ still returns 2,200,997 bytes / CRC32 2508205a at 397545 ms.
+
+Confirmed: a new video file and smaller same-named video appeared between two fresh mounts, establishing new camera-created media visibility over USB across this interval. Specific one-motion-event attribution and capture-mode selection were not explicitly confirmed. This log reads the older JPEG automatically, not the newly added video. Next READ /usb/DCIM/100MEDIA/DSCF0003.MP4 to establish complete newly added video byte retrieval and checksum. No claim of successful new-video retrieval until that completes.
+
+### Newly added original video completely read
+
+User-supplied serial evidence at 476955 ms: READ /usb/DCIM/100MEDIA/DSCF0003.MP4 bytes=6754937 CRC32/ISO-HDLC=c83b0587. Byte count equals the newly added file's fresh-remount listed size of 6,754,937 bytes. Earlier original JPEG READ at 397545 ms remains 2,200,997 bytes / CRC32 2508205a.
+
+Confirmed: full-byte retrieval and checksum calculation for newly added video, under the ongoing reported camera-armed/card-installed setup after USB disconnect/re-enumeration recovery. Independent playback/PC checksum and repeat-read checksum remain pending. This is evidence of a manual capture/recovery/retrieval workflow, not yet reliable autonomous scheduling, continuously shared filesystem consistency, or verified electrical isolation. Next low-impact check is repeat READ of this new MP4 and compare c83b0587, then optionally read the 279,139-byte cell_std variant.
+
+## Firmware 0.2.0 local microSD and verified archive implementation
+
+User supplied photos of N16R8 / V1695 / 231016 board with onboard SD slot and Gigastone 64 GB microSDXC. Matching Freenove-style manufacturer pin reference uses CMD38 CLK39 D0=40, 1-bit SDMMC. This is a layout-based initial mapping; hardware mount on exact board not yet tested. Framework ffconf.h has FF_FS_EXFAT=0; FAT32 needed for this destination card if currently exFAT. Firmware does not format cards.
+
+Implemented: automatic nonformatting local mount at boot, manual SDMOUNT/SDSTATUS/SDSCAN; COPY path and COPYALL; reserved local staging file; streamed CRC, flush/fsync/close and reopen verification; generated archive paths encoding source path/size/CRC; existing-file verification before skip; source-content change/error abort and USB mount release. No automatic copying, schedule, source deletion, radio or VBUS switching. Directory depth/path bounds abort archive batches explicitly. New files require two source reads and destination verification. FAT crash consistency and active-camera shared-filesystem snapshots are not guaranteed; source originals remain untouched.
+
+Write barrier revised from blanket read-only to a fail-closed local-drive whitelist: ff_diskio_get_pdrv_card identifies the actual successfully mounted destination. All USB/unknown-drive FatFS writes return RES_WRPRT. Final disassembly confirms wrapper checks local_storage_write_allowed; only its accepted branch calls real ff_disk_write, while denied branch returns 2. The allow function checks non-null local card, rejects drive 0xff, and compares registered drive mapping. Real dispatcher has only one direct call, from the guarded branch. This is static binary evidence, not a hardware write test.
+
+Final PlatformIO build: SUCCESS, 364,648 bytes flash / 26,920 bytes static RAM; runtime stacks/heap extra. Config supports two FAT volumes. Firmware SHA256 b4c5b8d562d93980eec124afdc3e01de62f26ae990498e4da6c11a54b79995da. git diff --check passes. No upload, local SD mount, local writes or copy/interruption tests performed by agent.
+
+Next live acceptance steps: with breakout/camera off, power ESP32 off and insert destination card; upload 0.2.0 over UART; inspect local mount/card info/SDSTATUS. If mount fails, supply error before changing format or wiring. After successful mount, acquire USB source outside camera first, COPY one smaller file, verify COPY VERIFIED and same CRC as source READ; repeat for COPY SKIP verified. Inspect SDSCAN and independently open/check copy on PC. Then test disconnect during copy, reboot/retry, existing-name reuse and COPYALL before any source deletion is considered.

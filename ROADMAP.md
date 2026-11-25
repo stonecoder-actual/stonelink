@@ -16,3 +16,13 @@ Original receiver repair and blind proprietary commands are out of scope.
 
 
 
+
+## Latest camera-installed result
+
+Controlled live tests now demonstrate USB reads with adapter retained in an armed camera after standby, and recovery from motion-associated stalls by manually cycling external USB 5 V. Latest logged JPEG read: 2,200,997 bytes, CRC32 2508205a. REINIT alone failed after motion; USB power cycling succeeded. Next verify video/new-capture retrieval and repeated motion/recovery cycles with fresh pre/post listings. Continuous shared filesystem access, reliable autonomous retrieval, electrical isolation and long-duration stability remain unproven. Earlier entries marking all installed-camera access unverified are superseded by these specific controlled results; the reliable product feasibility gate is not yet complete.
+
+New-media retrieval milestone: DSCF0003.MP4 appeared between fresh mounts and was completely read over USB (6,754,937 bytes, CRC32 c83b0587) in the reported retained-card/armed-camera test. Next: repeat checksum, validate playable contents independently, and repeat controlled capture/recovery cycles. Manual USB 5 V switching remains the demonstrated recovery mechanism; automatic VBUS switching awaits suitable hardware.
+
+## Revised collection direction (user authorized)
+
+Target: four collection windows per day, verified copies on onboard destination SD, then selectively clean up source, LoRa previews and Wi-Fi originals. Current 0.2.0 work implements manual SD mount/status/list and verified COPY/COPYALL only. Next bench milestone: actual local SD mount, one small copy, verified skip on repeat, USB interruption during copy and ESP restart/reverification. Then test full batch and name reuse. Implement scheduling and appropriate powered USB acquisition/release after copy reliability. Source deletion requires separately scoped write access and crash/camera-wake ownership tests; not implemented. LoRa preview size/protocol and high-resolution selection mapping remain future work.
