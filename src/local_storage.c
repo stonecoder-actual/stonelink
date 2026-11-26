@@ -14,6 +14,12 @@
 #include "diskio_sdmmc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "ff.h"
+#include "esp_timer.h"
+
+#if !FF_FS_EXFAT || !FF_USE_LFN
+#error "StoneLink local storage requires project-local exFAT and long filename support"
+#endif
 
 #define PATH_SIZE 768
 #define STORE "/sd/stonelink"
@@ -49,11 +55,11 @@ bool local_storage_mount(void)
     sdmmc_card_t *found = NULL;
     esp_err_t err = esp_vfs_fat_sdmmc_mount("/sd", &host, &slot, &mount, &found);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "SD mount failed: %s (0x%x). No formatting attempted. Check seating, FAT32 filesystem and board pinout (CMD38 CLK39 D0=40). exFAT is unsupported in this build.", esp_err_to_name(err), err);
+        ESP_LOGE(TAG, "SD mount failed: %s (0x%x). No formatting attempted. FAT32/exFAT enabled; check seating, filesystem and board pinout (CMD38 CLK39 D0=40).", esp_err_to_name(err), err);
         return false;
     }
     card = found; // Writes become possible only for this successfully mounted card.
-    ESP_LOGI(TAG, "Local SD mounted /sd; physical drive=%u; CMD38 CLK39 D0=40, 1-bit", ff_diskio_get_pdrv_card(card));
+    ESP_LOGI(TAG, "Local SD mounted /sd; physical drive=%u; FAT32/exFAT enabled; CMD38 CLK39 D0=40, 1-bit", ff_diskio_get_pdrv_card(card));
     sdmmc_card_print_info(stdout, card);
     local_storage_status();
     return true;
@@ -238,4 +244,19 @@ bool local_storage_copy(const char *source, bool (*available)(void))
     bool ok=copy_tree(source, 0);
     ESP_LOGI(TAG, "COPY %s copied=%u skipped=%u; source files untouched", ok ? "complete" : "aborted", copied, skipped);
     return ok;
+}
+
+void local_storage_journal(const char *event, uint32_t cycle, const char *result, const char *detail)
+{
+    if(!card) return;
+    char directory[PATH_SIZE]=STORE;
+    if(!mkdirs(directory)) { ESP_LOGE(TAG,"SOAK journal directory unavailable"); return; }
+    FILE *file=fopen(STORE "/soak.csv","a");
+    if(!file) { ESP_LOGE(TAG,"SOAK journal open failed errno=%d",errno); return; }
+    bool ok=fprintf(file,"%lld,%s,%" PRIu32 ",%s,%s\n",
+                    (long long)(esp_timer_get_time()/1000),event,cycle,result,detail)>=0;
+    if(fflush(file)) ok=false;
+    if(fsync(fileno(file))) ok=false;
+    if(fclose(file)) ok=false;
+    if(!ok) ESP_LOGE(TAG,"SOAK journal write failed; laptop UART log remains primary");
 }

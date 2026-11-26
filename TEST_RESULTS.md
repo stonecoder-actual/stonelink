@@ -332,3 +332,82 @@ Write barrier revised from blanket read-only to a fail-closed local-drive whitel
 Final PlatformIO build: SUCCESS, 364,648 bytes flash / 26,920 bytes static RAM; runtime stacks/heap extra. Config supports two FAT volumes. Firmware SHA256 b4c5b8d562d93980eec124afdc3e01de62f26ae990498e4da6c11a54b79995da. git diff --check passes. No upload, local SD mount, local writes or copy/interruption tests performed by agent.
 
 Next live acceptance steps: with breakout/camera off, power ESP32 off and insert destination card; upload 0.2.0 over UART; inspect local mount/card info/SDSTATUS. If mount fails, supply error before changing format or wiring. After successful mount, acquire USB source outside camera first, COPY one smaller file, verify COPY VERIFIED and same CRC as source READ; repeat for COPY SKIP verified. Inspect SDSCAN and independently open/check copy on PC. Then test disconnect during copy, reboot/retry, existing-name reuse and COPYALL before any source deletion is considered.
+
+## Firmware 0.3.0: development continues without a destination SD card
+
+User elected to retain FAT32, defer destination-card testing pending a good replacement, and continue development. No exFAT or shared framework changes made. Local SD startup mount disabled; manual SDMOUNT/copy support retained for later.
+
+Implemented read-only PLAN: fresh USB device/filesystem mount, media inventory under DCIM/cell_std/cell_hd, metadata IDs and BASELINE/NEW/CHANGED/UNCHANGED/MISSING classifications, byte/preview totals, transactionally replaced RAM baseline only on complete scans. Source released afterward, external USB power unchanged. Limits 128 files/255-byte source paths; IDs and unchanged status are metadata hints, not byte verification. RAM baseline is not durable and resets on reboot. Source filenames reused with unchanged length/timestamp can escape this metadata diff; full-copy CRC logic remains separate.
+
+Added SCHEDULE: off after boot, dry-run PLAN only, default six-hour uptime interval, explicit 30..86400-second test intervals, NOW/ON/OFF/STATUS, three attempts per failed window with 30-second retry spacing then defer to next interval. Completion-based intervals do not guarantee four fixed wall-clock collections per calendar day. Scheduling never calls COPY/deletion/VBUS operations. Diagnostic acquisitions separately cap at three consecutive failures with 15/30-second backoff, then require RETRY/new attachment; source errors no longer produce indefinite five-second acquisition loops. After PLAN, background acquisition is intentionally paused. Commands remain synchronous and may be delayed by USB transfers.
+
+Validation: final PlatformIO run SUCCESS, firmware 0.3.0, 370,064 bytes flash / 26,976 bytes static RAM (planner snapshots additionally consume up to approximately 68 KiB heap). Firmware SHA256 8b708c463a8095a1c802fa6a62896834034422c5ac215abc12c54737b78d8be0. git diff --check passed. Final ELF shows 18 calls into write guard, with guarded call to real dispatcher only after local-drive permission check; source barrier remains active.
+
+Host tests execute actual src/collection.c with fake read-only filesystem, availability, logs/tasks. PASS for initial/unchanged/new/size-changed/mtime-changed/missing media, nonmedia filtering, empty valid trees, directory I/O and unavailable-source baseline preservation, overflow rollback, schedule deadlines, three-attempt limit, OFF/NOW semantics and invalid interval rejection. Portable TinyCC upstream release downloaded under ignored .pio/host-tools for this test only. Host C compiler is not a firmware dependency. Tests do not emulate ESP32 USB/electrical behavior or actual card filesystem consistency.
+
+No upload or new hardware validation performed. Next live acceptance: upload 0.3.0, acquire source after camera standby using manual USB power, PLAN twice with no new capture; second should report unchanged. Trigger one capture, let camera settle, manually cycle USB power, PLAN and compare NEW entries. Then test dry-run schedule with EVERY 60 / ON, observe bounded failure/next-window behavior, OFF; do not call a dry run an actual collection. Local-copy and source-deletion tests remain deferred.
+
+## Firmware 0.3.1 FAT32 + exFAT implementation and validation
+
+User authorized exFAT while retaining FAT32, after resolving an independent card-formatting issue. Vendored ESP-IDF 5.4.0 / PlatformIO 3.50400.0 production FatFs component into components/fatfs (42 upstream production/config/tool files; upstream tests/examples omitted; source notices plus Apache license retained). Project-local normal component override selected in generated CMake description and build output. Shared framework untouched. Changes: FF_FS_EXFAT=1 and FF_USE_LABEL fallback zero when Kconfig bool disabled, required by exFAT ordinary C expressions. Existing heap LFN enabled, FF_LBA64 remains zero (sufficient for 64 GB card). Build assertions ensure exFAT/LFN enabled. Version 0.3.1, no change to formatting-disabled policy/manual mount.
+
+Validation: PlatformIO run SUCCESS, 377,020 flash bytes / 26,976 static RAM bytes (runtime allocations extra). SHA256 88d57b49a594228f7888849bf673bc8ad5721dd5e0b697ca48b28352955c4ab6. ELF audit: 26 FatFs calls target write guard; only one direct call to original write dispatcher, from conditional local-drive-approved branch. USB source writes remain denied. git diff --check passes.
+
+Actual vendored FatFs host tests PASS on sparse RAM-backed 64 MiB FAT32 and 64 GiB exFAT simulated disks. Each formats only RAM, mounts expected FS type, creates a long-name file, writes/syncs/closes, unmounts/remounts and compares bytes; checks free-space API/geometry and FSIZE_t=64-bit. exFAT usable geometry exceeds 32 GiB. OS mutexes and disk I/O are host stubs; no physical media touched. Volume-label config intentionally disabled in host test, exercising fallback fix. Production collector host regression suite also PASS.
+
+No upload or hardware card tests done in this change. First bench step: upload, insert card with ESP32 powered off, then SDMOUNT/SDSTATUS; report actual format acceptance/capacity/free bytes. FAT32 USB source and exFAT local destination should coexist but real simultaneous mount/copy remains unverified. No guarantee of individual files beyond VFS/off_t limits; current approximately 504 MB source makes aggregate capacity the relevant goal. No automatic source delete, scheduling of actual copies or VBUS hardware added.
+
+## Firmware 0.4.0 overnight soak-test development
+
+User requested unattended overnight camera/ESP32 logging and maximum practical development, without LoRa hardware. Added SOAK ON metadata monitor (default 300-second interval) and SOAK COPY verified COPYALL (default 21600 seconds, configurable EVERY 60..86400). First cycle after explicit enable/reboot restoration starts in 30 seconds; NOW permits preflight. Each cycle uses one fresh source acquisition and releases afterward, suppressing unrelated background retries. Failures remain explicit and wait next interval. SOAK disables WATCH and SCHEDULE on enable; main loop suppresses them during soak. No USB reset/power-switch claims, automatic reboots, source deletion/formatting, Wi-Fi or LoRa.
+
+Mode/interval persisted in NVS on ON/COPY/OFF/EVERY, restored after boot if valid. NVS init/commit errors log without erasing settings; persistence flag becomes false on save failure. Hardware persistence/reboot behavior still untested. Heartbeat reports mode, cycles/success/failures, USB connects/removals, heap free/minimum/largest block, main-stack watermark and next uptime. Heartbeats/console can be delayed during synchronous transfers/copy batches. Counts reset on ESP reboot, preserved across boots by laptop event capture.
+
+If local SD mounted, /sd/stonelink/soak.csv appends fsynced structured health/cycle records; no recursive logging hook and no attempt to write all driver output from USB tasks into FatFS. Laptop tools/overnight_log.py is full raw UART capture: UTC-stamped .log/.jsonl, refreshed/fsynced data and JSON summary, serial reconnect with DTR/RTS deasserted, interactive commands and optional one-time startup commands. Partial lines on disconnect retained; no auto resend of commands after reconnect. SOAK firmware persistence handles reboot rearming; logger exit alone does not stop it. logs/ and Python caches ignored. No system sleep settings changed by agent.
+
+Validation: final PlatformIO build SUCCESS, 400112 bytes flash / 27312 static RAM. Firmware SHA256 c405ca7274c24b63d826b9ae2564ae900a639fc1e34a4891afcf09258ab7b1c9. ELF audit confirms 26 calls through local-drive-approved FatFS guard. Python logger 3 unit/integration tests PASS, including mocked serial unplug/reconnect, preserved partial line, one-time command, persisted final summary/UTC classification. Production planner host tests and FAT32/64 GiB exFAT RAM-disk regression tests PASS. git diff --check passes.
+
+No upload, real-card writes, NVS reset restoration or overnight hardware run performed. OVERNIGHT.md requires actual SD mount/small verified-copy/repeat-skip and first successful SOAK cycle preflight before unattended COPY mode. Monitor-only fallback requires no card. Existing hardware cannot power-cycle VBUS; camera-motion-induced stalls may persist for rest of night despite periodic bounded reacquisition attempts. Long-term memory stability, actual capture counts, archive playback/integrity, card reliability and independent power isolation remain physical-test questions. Full laptop capture requires awake powered laptop; local CSV is not a complete UART backup.
+
+## First supplied firmware 0.4.0 soak interval: health stable, acquisition failed
+
+User-supplied PlatformIO upload/monitor log confirms firmware 0.4.0 boot, SOAK mode 1 enabled at 180085 ms, persisted flag 1. Completed cycles 1,2,3 all FAILED to acquire USB source (canceled transfers / MSC internal 0x1703). Latest at 840115 ms: cycles=3 success=0 failed=3; address=1 installed=0 mounted=0 removed=0. Approximate monitored soak interval 11 minutes since enable, 14 minutes since boot. No additional boot/reset appears in supplied excerpt.
+
+Health sample values remain heap_free=336852, heap_min=306156, heap_largest=270336; main stack watermark settles from 21840 to 21728 and stays there. No observed ongoing memory decline in this short interval. This validates periodic heartbeat and bounded attempts in this sample, not successful media acquisition/copy or overnight endurance. Mode 1 does not copy files. Supplied capture is PlatformIO monitor, not evidence that the dedicated timestamped laptop logger is recording to disk.
+
+Next preflight: let camera stay armed/idle, manually cycle breakout USB 5 V and then SOAK NOW. Since new attachment in soak mode defers auto mount, this tests the fresh cycle after actual USB-side recovery. If it succeeds, continued overnight monitoring remains informative, but unattended reacquisition after a later camera event is still hardware-limited without VBUS switching. If it fails immediately after clean USB cycle, investigate driver teardown/reinstall separately before attributing all failures to camera ownership.
+
+### Soak cycle 4 succeeds after manual USB power cycle
+
+User-supplied log: USB removed at 947055 ms, reconnected at 957255 ms (address 2). SOAK NOW cycle 4 begins at 969495 ms; storage mounts at 970405 ms. PLAN completes four media files totaling 8,438,790 bytes, including cell_std 118,629 bytes. Original videos /DCIM/101MEDIA/DSCF0001.MP4 5,100,591 bytes and DSCF0002.MP4 3,219,570 bytes; cell_std counterparts 99,610 and 19,019 bytes. First RAM baseline established, not NEW files relative to an earlier soak baseline. Cycle 4 SUCCESS at 970545 ms; totals 4 cycles/1 success/3 failures. Source released intentionally afterward, no files copied/deleted, mode=1 monitor only.
+
+Heap free changes from 336848 before first baseline to 302028 afterward (34,820-byte decrease, consistent with one 34,816-byte baseline allocation plus allocator/alignment differences). This expected retained snapshot is not evidence of a leak; successive completed scans should plateau rather than dropping by another snapshot each time. Minimum heap 270256 reflects temporary scan allocation; largest block 208896, main stack watermark 21664. Next preflight: another SOAK NOW without any camera/power/wiring changes while avoiding motion, to verify acquisition after prior cycle release and unchanged-file comparison. Observe next health heap for plateau before leaving unattended.
+# Firmware 0.5.0 external-power workflow — software validation
+
+Implemented COLLECT PLAN/COPY, manual external +5 V OFF/ON acknowledgments,
+ten-second off hold, five-second settle, bounded USB presence/acquisition,
+final source release/power-off and opt-in active-high GPIO21 control. Default
+MANUAL mode never drives GPIO21. SOAK/SCHEDULE use the same serialized workflow;
+copy mode reuses existing verified archival logic. Source writes remain blocked.
+Power mode resets to MANUAL each boot; SOAK mode/interval retain NVS persistence.
+POWER_TEST.md records current bench instructions and future DFR0457 wiring.
+
+Final PlatformIO build SUCCESS: 407,972 flash bytes / 27,376 static RAM bytes;
+runtime USB, planner, task and filesystem allocations are additional.
+Firmware SHA256: 909e31c71b232615c640ed96cd6da6db81a84a552a0f6e2fc6124e82d7c8016d.
+Final ELF audit: 26 calls into __wrap_ff_disk_write; the sole call to original
+ff_disk_write remains behind local_storage_write_allowed in the wrapper.
+
+Production-controller host tests PASS: manual mode makes zero output calls;
+OFF/ON/final OFF ordering; early/late/wrong confirmations; hold/settle boundaries;
+three-attempt retry cap; bounded USB/manual waits; reminders; timeout/cancel
+never succeeds; GPIO active-high sequence and failed output handling; cleanup
+fault avoids power changes, including subsequent cancellation. Production planner
+regression PASS. Logger classification/reconnect/UTC/summary tests: all 3 PASS.
+git diff --check passes. Existing local/archive and FatFs code is unchanged in
+this update. No firmware upload, physical GPIO measurement or camera recovery
+test has been performed by the agent. Next acceptance: manual baseline/new-media
+cycles, then verified local copies and actual switch testing while present.
+
+Earlier test history follows.
+

@@ -3,3 +3,5 @@ sdkconfig
 sdkconfig.*
 !sdkconfig.defaults
 managed_components/
+logs/
+__pycache__/
