@@ -3,6 +3,8 @@
 #include "archive_naming.h"
 #include "media_group.h"
 #include "transfer_queue.h"
+#include "ingest_store.h"
+#include "media_io.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,7 +37,8 @@ static const char *TAG = "local_sd";
 static sdmmc_card_t *card;
 static uint8_t buffer[8192]; // All operations run in the main task.
 static bool (*source_available)(void);
-static unsigned copied, skipped, ignored;
+static bool copy_verify_mode; // FAST by default; explicit VERIFY audits old bytes.
+static unsigned received,fast_skipped,staged_skipped,ignored,planned,recovery_planned;
 static char device_prefix[17];
 static media_group_result_t active_group;
 
@@ -135,15 +138,6 @@ void local_storage_scan(void)
     ESP_LOGI(TAG, "Local SD scan %s", list_tree("/sd", 0) ? "complete" : "failed");
 }
 
-static uint32_t crc_update(uint32_t crc, const uint8_t *data, size_t n)
-{
-    for (size_t i=0; i<n; i++) {
-        crc ^= data[i];
-        for (unsigned bit=0; bit<8; bit++) crc=(crc>>1)^((crc&1) ? 0xedb88320u : 0);
-    }
-    return crc;
-}
-
 // Never follows source paths outside /usb; all destination paths are generated.
 static bool valid_source(const char *path)
 {
@@ -174,13 +168,14 @@ static bool hash_file(const char *path, bool source, uint64_t *bytes, uint32_t *
     FILE *f = fopen(path, "rb");
     if (!f) { ESP_LOGE(TAG, "Read open failed %s errno=%d", path, errno); return false; }
     uint64_t count=0; uint32_t value=0xffffffffu; size_t n;
+    int64_t started=esp_timer_get_time(); media_io_guard_t guard; media_io_begin(&guard);
     mbedtls_sha256_context context; mbedtls_sha256_init(&context);
     bool ok=mbedtls_sha256_starts(&context,0)==0;
     while (ok && (n=fread(buffer, 1, sizeof(buffer), f))) {
         if (source && !source_available()) { ok=false; break; }
-        count+=n; value=crc_update(value, buffer, n);
+        count+=n; value=media_crc32_update(value, buffer, n);
         if(mbedtls_sha256_update(&context,buffer,n)) { ok=false; break; }
-        vTaskDelay(1);
+        media_io_checkpoint(&guard);
     }
     if (ferror(f) || (source && !source_available())) ok=false;
     if (fclose(f)) ok=false;
@@ -190,29 +185,31 @@ static bool hash_file(const char *path, bool source, uint64_t *bytes, uint32_t *
     if (!ok) { ESP_LOGE(TAG, "Incomplete checksum read %s", path); return false; }
     *bytes=count; *crc=value^0xffffffffu;
     sha_hex(digest,sha);
+    ESP_LOGI(TAG,"IO HASH storage=%s bytes=%" PRIu64 " elapsed_ms=%lld yields=%u",source?"USB":"LOCAL",count,
+             (long long)((esp_timer_get_time()-started)/1000),guard.yields);
     return true;
 }
 
-typedef struct { FILE *file; bool io_error; } metadata_file_t;
+typedef struct { FILE *file; bool io_error,on_usb; } metadata_file_t;
 static bool metadata_read_at(void *context,uint64_t offset,void *out,size_t length)
 {
     metadata_file_t *reader=context;
     if(reader->io_error) return false; // One failed USB read ends further metadata I/O.
-    if(!source_available() || offset>LONG_MAX || fseek(reader->file,(long)offset,SEEK_SET) ||
+    if((reader->on_usb && !source_available()) || offset>LONG_MAX || fseek(reader->file,(long)offset,SEEK_SET) ||
        fread(out,1,length,reader->file)!=length) { reader->io_error=true; return false; }
     return true;
 }
-static bool read_metadata(const char *source,uint64_t size,capture_metadata_t *metadata)
+static bool read_metadata_file(const char *storage_path,const char *source,uint64_t size,bool on_usb,capture_metadata_t *metadata)
 {
-    FILE *file=fopen(source,"rb");
-    if(!file) { ESP_LOGE(TAG,"META open failed %s errno=%d",source,errno); return false; }
-    metadata_file_t reader={file,false};
+    FILE *file=fopen(storage_path,"rb");
+    if(!file) { ESP_LOGE(TAG,"META open failed %s errno=%d",storage_path,errno); return false; }
+    metadata_file_t reader={file,false,on_usb};
     const char *ext=strrchr(source,'.');
     capture_metadata_read(metadata_read_at,&reader,size,strcasecmp(ext,".mp4")!=0,metadata);
-    bool ok=!reader.io_error && !ferror(file) && source_available();
+    bool ok=!reader.io_error && !ferror(file) && (!on_usb || source_available());
     if(fclose(file)) ok=false;
-    if(ok) ESP_LOGI(TAG,"META source=%s camera_datetime=%s time_source=%s timezone=camera_unspecified conversion=NONE",
-                   source,metadata->datetime[0]?metadata->datetime:"UNKNOWN_CAPTURE_TIME",metadata->source);
+    if(ok) ESP_LOGI(TAG,"META source=%s camera_datetime=%s time_source=%s timezone=camera_unspecified conversion=NONE storage=%s",
+                   source,metadata->datetime[0]?metadata->datetime:"UNKNOWN_CAPTURE_TIME",metadata->source,on_usb?"USB":"LOCAL");
     else ESP_LOGE(TAG,"META read failed; source may be unavailable: %s",source);
     return ok;
 }
@@ -225,7 +222,7 @@ void local_storage_metadata(const char *source,bool (*available)(void))
     if(stat(source,&st) || !S_ISREG(st.st_mode)) { ESP_LOGE(TAG,"META requires a regular file"); return; }
     source_available=available;
     capture_metadata_t metadata;
-    read_metadata(source,st.st_size,&metadata);
+    read_metadata_file(source,source,st.st_size,true,&metadata);
 }
 static bool mkdirs(char *path)
 {
@@ -261,127 +258,285 @@ static bool reconcile_capture(const char *id,const char *sha,char *path)
     if(!group_folder(folder,id) || !media_group_reconcile(folder,device_prefix,group_member,(void *)id,&active_group)) return false;
     return !sha || media_group_find(folder,device_prefix,sha,path,PATH_SIZE);
 }
-static bool copy_file(const char *source, const struct stat *before)
+typedef enum { CACHE_NEW, CACHE_VERIFIED, CACHE_STAGED, CACHE_RECOVERY } cache_state_t;
+static bool same_payload(const ingest_record_t *a,const ingest_record_t *b)
 {
-    uint64_t size; uint32_t crc; char sha[65];
-    ESP_LOGI(TAG, "COPY checking %s size=%lld", source, (long long)before->st_size);
-    if (!hash_file(source, true, &size, &crc, sha) || size != (uint64_t)before->st_size) return false;
-    capture_metadata_t metadata;
-    if(!ensure_identity() || !read_metadata(source,size,&metadata)) return false;
-    char capture_id[65]; bool linkable;
-    if(!capture_identity(source,&metadata,sha,capture_id,&linkable)) return false;
-    char directory[PATH_SIZE], final[PATH_SIZE],candidate[PATH_SIZE];
-    if(!reconcile_capture(capture_id,NULL,NULL) ||
-       !archive_media_path(final,sizeof(final),STORE,device_prefix,source,&metadata,sha,capture_id,"SD")) return false;
-    ESP_LOGI(TAG,"CAPTURE id=%s kind=%s known_time=%d source=%s",capture_id,archive_kind(source),linkable,source);
-    struct stat existing; bool found=false;
-    const char *qualities[]={"SD","HD"};
-    for(unsigned i=0;i<2;i++) {
-        if(!archive_media_path(candidate,sizeof(candidate),STORE,device_prefix,source,&metadata,sha,capture_id,qualities[i])) return false;
-        if(!stat(candidate,&existing)) {
-            if(found) { ESP_LOGE(TAG,"Duplicate archive aliases; preserved"); return false; }
-            found=true; strcpy(final,candidate);
-        } else if(errno!=ENOENT) { ESP_LOGE(TAG,"Archive stat failed errno=%d",errno); return false; }
-    }
-    if (found) {
-        if(stat(final,&existing)) return false;
-        uint64_t local_size; uint32_t local_crc; char local_sha[65];
-        if (!S_ISREG(existing.st_mode) || !hash_file(final, false, &local_size, &local_crc,local_sha) || local_size!=size || local_crc!=crc || strcmp(sha,local_sha)) {
-            ESP_LOGE(TAG, "Existing archive differs/cannot verify; preserved: %s", final); return false;
-        }
-        struct stat after;
-        if(!source_available() || stat(source,&after) || after.st_size!=before->st_size || after.st_mtime!=before->st_mtime ||
-           !reconcile_capture(capture_id,sha,final)) return false;
-        skipped++;
-        ESP_LOGI(TAG, "COPY SKIP verified %s bytes=%" PRIu64 " CRC32=%08" PRIx32 " SHA256=%s", final, size, crc,sha);
-        return true;
-    }
-    // Reopen source for copying. A second CRC must match the pre-copy checksum.
-    strcpy(directory, STORE);
-    if (!mkdirs(directory)) return false;
-    FILE *in=fopen(source, "rb"), *out=NULL;
-    if (in) out=fopen(STAGING, "wb"); // Reserved staging file: overwritten after interrupted copies.
-    if (!in || !out) {
-        if (in) fclose(in);
-        ESP_LOGE(TAG, "COPY open failed errno=%d", errno); return false;
-    }
-    mbedtls_sha256_context streaming_sha; mbedtls_sha256_init(&streaming_sha);
-    uint64_t written=0; uint32_t streaming=0xffffffffu; size_t n;
-    bool ok=mbedtls_sha256_starts(&streaming_sha,0)==0;
-    while (ok && (n=fread(buffer, 1, sizeof(buffer), in))) {
-        if (!source_available() || fwrite(buffer, 1, n, out)!=n) { ok=false; break; }
-        written+=n; streaming=crc_update(streaming, buffer, n);
-        if(mbedtls_sha256_update(&streaming_sha,buffer,n)) ok=false;
-        vTaskDelay(1);
-    }
-    if (ferror(in) || !source_available() || written!=size || (streaming^0xffffffffu)!=crc) ok=false;
-    if (fclose(in)) ok=false;
-    if (fflush(out)) ok=false;
-    if (fsync(fileno(out))) ok=false;
-    if (fclose(out)) ok=false;
-    uint8_t streamed_digest[32]; char streamed_text[65];
-    if(ok) {
-        if(mbedtls_sha256_finish(&streaming_sha,streamed_digest)) ok=false;
-        else { sha_hex(streamed_digest,streamed_text); if(strcmp(sha,streamed_text)) ok=false; }
-    }
-    mbedtls_sha256_free(&streaming_sha);
-    struct stat after;
-    if (stat(source, &after) || after.st_size!=before->st_size || after.st_mtime!=before->st_mtime) ok=false;
-    uint64_t verified_size=0; uint32_t verified_crc=0; char verified_sha[65];
-    if (ok) ok=hash_file(STAGING, false, &verified_size, &verified_crc,verified_sha) && verified_size==size && verified_crc==crc && !strcmp(sha,verified_sha);
-    if (!ok) {
-        ESP_LOGE(TAG, "COPY failed/interrupted; source untouched; staging retained for next attempt"); return false;
-    }
-    strcpy(directory, final);
-    *strrchr(directory, '/')=0;
-    if (!mkdirs(directory) || rename(STAGING, final)) {
-        ESP_LOGE(TAG, "COPY publish failed errno=%d; staging retained", errno); return false;
-    }
-    if (!hash_file(final, false, &verified_size, &verified_crc,verified_sha) || verified_size!=size || verified_crc!=crc || strcmp(sha,verified_sha)) {
-        ESP_LOGE(TAG, "COPY final verification failed; source untouched: %s", final); return false;
-    }
-    if(!reconcile_capture(capture_id,sha,final)) return false;
-    copied++;
-    ESP_LOGI(TAG, "COPY VERIFIED source=%s destination=%s bytes=%" PRIu64 " CRC32=%08" PRIx32 " SHA256=%s", source, final, size, crc,sha);
-    return true;
+    return a->bytes==b->bytes && a->data_crc32==b->data_crc32 && !strcmp(a->kind,b->kind) && !strcmp(a->sha256,b->sha256);
 }
-
-static bool copy_tree(const char *path, unsigned depth)
+static bool asset_record(const ingest_record_t *receipt,bool ready,ingest_record_t *asset)
 {
-    if (!source_available() || depth>16) return false;
-    struct stat st;
-    if (stat(path, &st)) { ESP_LOGE(TAG, "Source stat failed %s errno=%d", path, errno); return false; }
-    if (S_ISREG(st.st_mode)) {
-        if(!media_file_supported(path)) {
-            ignored++;
-            ESP_LOGI(TAG,"COPY IGNORE non-media %s",path);
+    char path[PATH_SIZE];
+    return ingest_asset_path(path,sizeof(path),STORE,receipt,ready) && ingest_read_record(path,device_prefix,asset) &&
+           same_payload(receipt,asset) && archive_hex_id(asset->capture_id);
+}
+static bool asset_file(const ingest_record_t *asset,char *path)
+{
+    char folder[PATH_SIZE]; struct stat info;
+    return group_folder(folder,asset->capture_id) && media_group_find(folder,device_prefix,asset->sha256,path,PATH_SIZE) &&
+           !stat(path,&info) && S_ISREG(info.st_mode) && info.st_size>=0 && (uint64_t)info.st_size==asset->bytes;
+}
+static cache_state_t cached_source(const char *source,const struct stat *info)
+{
+    ingest_record_t receipt,asset,pending; char path[PATH_SIZE]; struct stat local;
+    if(!ingest_source_lookup(STORE,device_prefix,source,info->st_size,info->st_mtime,&receipt)) return CACHE_NEW;
+    if(asset_record(&receipt,true,&asset) && asset_file(&asset,path)) return CACHE_VERIFIED;
+    if(ingest_receipt_path(path,sizeof(path),STORE,device_prefix,receipt.receipt_id) &&
+       ingest_read_record(path,device_prefix,&pending) && same_payload(&receipt,&pending)) {
+        if(ingest_payload_path(path,sizeof(path),STORE,&receipt) && !stat(path,&local) && S_ISREG(local.st_mode) &&
+           local.st_size>=0 && (uint64_t)local.st_size==receipt.bytes) return CACHE_STAGED;
+        if(asset_record(&receipt,false,&asset) && asset_file(&asset,path)) return CACHE_STAGED;
+    }
+    return CACHE_RECOVERY;
+}
+void local_storage_copy_mode(const char *args)
+{
+    if(args && !strcasecmp(args,"FAST")) copy_verify_mode=false;
+    else if(args && !strcasecmp(args,"VERIFY")) copy_verify_mode=true;
+    else if(args && *args && strcasecmp(args,"STATUS")) { ESP_LOGI(TAG,"COPYMODE FAST | VERIFY | STATUS"); return; }
+    ESP_LOGI(TAG,"COPYMODE mode=%s default_after_boot=FAST; indexed metadata skips do not rehash old content",
+             copy_verify_mode?"VERIFY":"FAST");
+}
+typedef struct {
+    uint32_t crc32,priority;
+    int64_t bytes,mtime;
+    char source[PATH_SIZE];
+} receive_work_t;
+static uint32_t work_crc(const receive_work_t *work)
+{
+    return media_crc32_update(UINT32_MAX,(const uint8_t *)work+sizeof(work->crc32),sizeof(*work)-sizeof(work->crc32))^UINT32_MAX;
+}
+static bool discover_sources(const char *path,unsigned depth,FILE *worklist)
+{
+    if(!source_available() || depth>16) return false;
+    struct stat info;
+    if(stat(path,&info)) { ESP_LOGE(TAG,"Source discovery stat failed %s errno=%d",path,errno); return false; }
+    if(S_ISREG(info.st_mode)) {
+        if(!media_file_supported(path)) { ignored++; return true; }
+        if(info.st_size<0) return false;
+        cache_state_t state=cached_source(path,&info);
+        if(!copy_verify_mode && (state==CACHE_VERIFIED || state==CACHE_STAGED)) {
+            if(state==CACHE_VERIFIED) fast_skipped++; else staged_skipped++;
+            ESP_LOGI(TAG,"RECEIVE %s source=%s bytes=%lld; metadata match, no payload read",
+                     state==CACHE_VERIFIED?"FAST SKIP":"ALREADY STAGED",path,(long long)info.st_size);
             return true;
         }
-        return copy_file(path, &st);
+        if(planned>=65535 || strlen(path)>=PATH_SIZE) return false;
+        receive_work_t item={0}; strcpy(item.source,path); item.bytes=info.st_size; item.mtime=info.st_mtime;
+        item.priority=state==CACHE_NEW?0:1; item.crc32=work_crc(&item);
+        if(fwrite(&item,1,sizeof(item),worklist)!=sizeof(item)) return false;
+        planned++; if(item.priority) recovery_planned++;
+        return true;
     }
-    if (!S_ISDIR(st.st_mode)) return false;
-    DIR *dir=opendir(path);
-    if (!dir) return false;
-    struct dirent *entry; bool ok=true;
-    for (;;) {
-        errno=0; entry=readdir(dir);
-        if (!entry) { if (errno) { ESP_LOGE(TAG, "readdir %s errno=%d", path, errno); ok=false; } break; }
-        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+    if(!S_ISDIR(info.st_mode)) return false;
+    DIR *dir=opendir(path); if(!dir) return false;
+    bool ok=true;
+    for(;;) {
+        errno=0; struct dirent *entry=readdir(dir);
+        if(!entry) { if(errno) ok=false; break; }
+        if(!strcmp(entry->d_name,".") || !strcmp(entry->d_name,"..")) continue;
         char child[PATH_SIZE];
-        if (!joined(child, path, entry->d_name) || !copy_tree(child, depth+1)) { ok=false; break; }
+        if(!joined(child,path,entry->d_name) || !discover_sources(child,depth+1,worklist)) { ok=false; break; }
     }
-    closedir(dir);
+    if(closedir(dir)) ok=false;
     return ok;
 }
-
-bool local_storage_copy(const char *source, bool (*available)(void))
+static bool unused_receipt(ingest_record_t *record,char *payload,char *receipt)
 {
-    if (!card) { ESP_LOGE(TAG, "COPY requires mounted local SD; use SDMOUNT/SDSTATUS"); return false; }
-    if (!valid_source(source) || !available || !available()) { ESP_LOGE(TAG, "COPY requires available /usb source path"); return false; }
-    source_available=available; copied=skipped=ignored=0;
-    bool ok=copy_tree(source, 0);
-    ESP_LOGI(TAG, "COPY %s copied=%u skipped=%u ignored=%u; source files untouched", ok ? "complete" : "aborted", copied, skipped, ignored);
+    for(unsigned nonce=0;nonce<65535;nonce++) {
+        if(!ingest_receipt_id(record->source_key,record->sha256,nonce,record->receipt_id) ||
+           !ingest_payload_path(payload,PATH_SIZE,STORE,record) ||
+           !ingest_receipt_path(receipt,PATH_SIZE,STORE,device_prefix,record->receipt_id)) return false;
+        struct stat info;
+        if(!stat(payload,&info)) continue;
+        if(errno!=ENOENT) return false;
+        if(!stat(receipt,&info)) continue;
+        if(errno!=ENOENT) return false;
+        char bad[800]; snprintf(bad,sizeof(bad),"%s.bad",receipt);
+        if(!stat(bad,&info)) continue;
+        if(errno!=ENOENT) return false;
+        return true;
+    }
+    return false;
+}
+static bool receive_one(const receive_work_t *item)
+{
+    struct stat before,after;
+    if(!source_available() || stat(item->source,&before) || !S_ISREG(before.st_mode) || before.st_size!=item->bytes || before.st_mtime!=item->mtime) {
+        ESP_LOGE(TAG,"Source changed since discovery: %s",item->source); return false;
+    }
+    ingest_record_t record={0}; strcpy(record.prefix,device_prefix); strcpy(record.source_path,item->source);
+    strcpy(record.kind,archive_kind(item->source)); record.bytes=item->bytes; record.source_mtime=item->mtime;
+    if(!ingest_source_key(device_prefix,item->source,record.bytes,record.source_mtime,record.source_key)) return false;
+    FILE *in=fopen(item->source,"rb");
+    if(!in) return false;
+    char stage[PATH_SIZE]; snprintf(stage,sizeof(stage),STORE "/%s/inbox/.receiving.part",device_prefix);
+    FILE *out=fopen(stage,"wb"); if(!out) { fclose(in); return false; }
+    int64_t started=esp_timer_get_time(); media_io_guard_t guard; media_io_begin(&guard);
+    mbedtls_sha256_context sha; mbedtls_sha256_init(&sha);
+    bool ok=mbedtls_sha256_starts(&sha,0)==0; uint64_t total=0; uint32_t crc=UINT32_MAX; size_t n;
+    ESP_LOGI(TAG,"RECEIVE begin priority=%s source=%s bytes=%lld",item->priority?"OLD_RECOVERY_OR_AUDIT":"NEW_OR_CHANGED",item->source,(long long)item->bytes);
+    while(ok && (n=fread(buffer,1,sizeof(buffer),in))) {
+        if(!source_available() || fwrite(buffer,1,n,out)!=n) { ok=false; break; }
+        total+=n; crc=media_crc32_update(crc,buffer,n);
+        if(mbedtls_sha256_update(&sha,buffer,n)) ok=false;
+        media_io_checkpoint(&guard);
+    }
+    if(ferror(in) || !source_available() || total!=record.bytes || stat(item->source,&after) ||
+       after.st_size!=before.st_size || after.st_mtime!=before.st_mtime) ok=false;
+    if(fclose(in)) ok=false;
+    if(fflush(out)) ok=false;
+    if(fsync(fileno(out))) ok=false;
+    if(fclose(out)) ok=false;
+    uint8_t digest[32];
+    if(ok && mbedtls_sha256_finish(&sha,digest)) ok=false;
+    mbedtls_sha256_free(&sha);
+    if(!ok) { ESP_LOGE(TAG,"RECEIVE incomplete; partial local stage retained; no source writes"); return false; }
+    sha_hex(digest,record.sha256); record.data_crc32=crc^UINT32_MAX;
+    char payload[PATH_SIZE],receipt[PATH_SIZE];
+    if(!unused_receipt(&record,payload,receipt)) return false;
+    ingest_record_seal(&record);
+    if(rename(stage,payload) || !ingest_publish_record(receipt,&record,false)) {
+        ESP_LOGE(TAG,"RECEIVE receipt publication failed; local payload retained"); return false;
+    }
+    if(!ingest_source_publish(STORE,&record)) ESP_LOGW(TAG,"Source index deferred; durable inbox receipt retained");
+    received++;
+    ESP_LOGI(TAG,"RECEIVE STORED source=%s receipt=%s bytes=%" PRIu64 " elapsed_ms=%lld; local readback/metadata deferred until source release",
+             item->source,record.receipt_id,record.bytes,(long long)((esp_timer_get_time()-started)/1000));
+    return true;
+}
+bool local_storage_receive(const char *source,bool (*available)(void))
+{
+    if(!card || !ensure_identity() || !valid_source(source) || !available || !available()) {
+        ESP_LOGE(TAG,"RECEIVE needs local SD and available /usb source"); return false;
+    }
+    if(!ingest_layout(STORE,device_prefix)) return false;
+    source_available=available; received=fast_skipped=staged_skipped=ignored=planned=recovery_planned=0;
+    char path[PATH_SIZE]; snprintf(path,sizeof(path),STORE "/%s/inbox/.source.work",device_prefix);
+    FILE *work=fopen(path,"wb"); if(!work) return false;
+    int64_t started=esp_timer_get_time();
+    bool ok=discover_sources(source,0,work);
+    if(fflush(work)) ok=false;
+    if(fclose(work)) ok=false;
+    ESP_LOGI(TAG,"RECEIVE discovery mode=%s new_or_changed=%u old_recovery_or_audit=%u fast_skipped=%u staged_skipped=%u ignored=%u elapsed_ms=%lld",
+             copy_verify_mode?"VERIFY":"FAST",planned-recovery_planned,recovery_planned,fast_skipped,staged_skipped,ignored,
+             (long long)((esp_timer_get_time()-started)/1000));
+    if(ok && planned) {
+        work=fopen(path,"rb"); if(!work) ok=false;
+        else {
+            // Stream the small local worklist twice: all new content first,
+            // known recovery/integrity-audit work last. No RAM file-count index.
+            for(unsigned priority=0;ok && priority<2;priority++) {
+                if(fseek(work,0,SEEK_SET)) { ok=false; break; }
+                for(unsigned i=0;ok && i<planned;i++) {
+                    receive_work_t item;
+                    if(fread(&item,1,sizeof(item),work)!=sizeof(item) || item.crc32!=work_crc(&item) || item.priority>1 ||
+                       !memchr(item.source,0,sizeof(item.source)) || !valid_source(item.source) || !media_file_supported(item.source) || item.bytes<0) { ok=false; break; }
+                    if(item.priority==priority && !receive_one(&item)) ok=false;
+                }
+            }
+            if(fclose(work)) ok=false;
+        }
+    }
+    ESP_LOGI(TAG,"RECEIVE %s received=%u fast_skipped=%u staged_skipped=%u ignored=%u elapsed_ms=%lld; release USB before local processing",
+             ok?"complete":"aborted",received,fast_skipped,staged_skipped,ignored,(long long)((esp_timer_get_time()-started)/1000));
     return ok;
+}
+static bool record_asset_location(const ingest_record_t *record,char *path)
+{
+    ingest_record_t asset;
+    return (asset_record(record,true,&asset) || asset_record(record,false,&asset)) && asset_file(&asset,path);
+}
+static bool normalize_receipt(const char *receipt_path,const ingest_record_t *receipt,bool *created)
+{
+    ingest_record_t record=*receipt; char raw[PATH_SIZE],input[PATH_SIZE]; struct stat info;
+    if(!ingest_payload_path(raw,sizeof(raw),STORE,&record)) return false;
+    bool raw_exists=!stat(raw,&info);
+    if(raw_exists) strcpy(input,raw);
+    else if(errno!=ENOENT || !record_asset_location(&record,input)) {
+        ESP_LOGE(TAG,"PROCESS missing durable payload receipt=%s",record.receipt_id); return false;
+    }
+    uint64_t bytes; uint32_t crc; char sha[65];
+    if(!hash_file(input,false,&bytes,&crc,sha) || bytes!=record.bytes || crc!=record.data_crc32 || strcmp(sha,record.sha256)) {
+        char bad[800]; snprintf(bad,sizeof(bad),"%s.bad",receipt_path);
+        if(rename(receipt_path,bad)) ESP_LOGE(TAG,"Could not quarantine bad receipt; retained");
+        ESP_LOGE(TAG,"PROCESS checksum failed; payload preserved, source index cannot skip this pending receipt"); return false;
+    }
+    capture_metadata_t metadata;
+    if(!read_metadata_file(input,record.source_path,record.bytes,false,&metadata)) return false;
+    bool linkable;
+    if(!capture_identity(record.source_path,&metadata,record.sha256,record.capture_id,&linkable)) return false;
+    strcpy(record.datetime,metadata.datetime); snprintf(record.time_source,sizeof(record.time_source),"%s",metadata.source);
+    ingest_record_seal(&record);
+    if(!reconcile_capture(record.capture_id,NULL,NULL)) return false;
+    char final[PATH_SIZE],candidate[PATH_SIZE],directory[PATH_SIZE]; bool found=false;
+    if(!archive_media_path(final,sizeof(final),STORE,device_prefix,record.source_path,&metadata,record.sha256,record.capture_id,"SD")) return false;
+    const char *qualities[]={"SD","HD"};
+    for(unsigned i=0;i<2;i++) {
+        if(!archive_media_path(candidate,sizeof(candidate),STORE,device_prefix,record.source_path,&metadata,record.sha256,record.capture_id,qualities[i])) return false;
+        if(!stat(candidate,&info)) { if(found) return false; found=true; strcpy(final,candidate); }
+        else if(errno!=ENOENT) return false;
+    }
+    if(found) {
+        if(strcmp(input,final) && (!hash_file(final,false,&bytes,&crc,sha) || bytes!=record.bytes || crc!=record.data_crc32 || strcmp(sha,record.sha256))) {
+            ESP_LOGE(TAG,"Existing archive corrupt; inbox/source preserved for repair"); return false;
+        }
+    } else {
+        if(!raw_exists) return false;
+        char prepared[PATH_SIZE];
+        if(!ingest_asset_path(prepared,sizeof(prepared),STORE,&record,false) || !ingest_publish_record(prepared,&record,true)) return false;
+        strcpy(directory,final); *strrchr(directory,'/')=0;
+        if(!mkdirs(directory) || rename(raw,final)) return false;
+        raw_exists=false;
+        if(!hash_file(final,false,&bytes,&crc,sha) || bytes!=record.bytes || crc!=record.data_crc32 || strcmp(sha,record.sha256)) return false;
+        *created=true;
+    }
+    if(!reconcile_capture(record.capture_id,record.sha256,final)) return false;
+    char ready[PATH_SIZE];
+    if(!ingest_asset_path(ready,sizeof(ready),STORE,&record,true) || !ingest_publish_record(ready,&record,true) ||
+       !ingest_source_publish(STORE,&record)) return false;
+    // Only remove an independently verified duplicate local inbox payload.
+    if(raw_exists && strcmp(raw,final) && unlink(raw)) return false;
+    if(unlink(receipt_path)) return false;
+    ESP_LOGI(TAG,"CAPTURE id=%s kind=%s known_time=%d source=%s storage=LOCAL",record.capture_id,record.kind,linkable,record.source_path);
+    ESP_LOGI(TAG,"COPY %s source=%s destination=%s bytes=%" PRIu64 " CRC32=%08" PRIx32 " SHA256=%s phase=LOCAL_AFTER_RELEASE",
+             *created?"VERIFIED":"SKIP verified",record.source_path,final,record.bytes,record.data_crc32,record.sha256);
+    return true;
+}
+bool local_storage_process_inbox(void)
+{
+    if(!card || !ensure_identity() || !ingest_layout(STORE,device_prefix)) return false;
+    char folder[PATH_SIZE],workpath[PATH_SIZE]; snprintf(folder,sizeof(folder),STORE "/%s/inbox",device_prefix);
+    snprintf(workpath,sizeof(workpath),STORE "/%s/inbox/.process.work",device_prefix);
+    FILE *work=fopen(workpath,"wb"); if(!work) return false;
+    DIR *dir=opendir(folder); if(!dir) { fclose(work); return false; }
+    bool ok=true; unsigned count=0,entries=0;
+    for(;;) {
+        errno=0; struct dirent *entry=readdir(dir);
+        if(!entry) { if(errno) ok=false; break; }
+        if(++entries>131072) { ok=false; break; }
+        if(strlen(entry->d_name)!=72 || strcmp(entry->d_name+64,".receipt")) continue;
+        char id[65]; memcpy(id,entry->d_name,64); id[64]=0;
+        if(!archive_hex_id(id) || count>=65535 || fwrite(id,1,sizeof(id),work)!=sizeof(id)) { ok=false; break; }
+        count++;
+    }
+    if(closedir(dir)) ok=false;
+    if(fflush(work)) ok=false;
+    if(fclose(work)) ok=false;
+    if(!ok) { ESP_LOGE(TAG,"PROCESS pending inventory incomplete; receipts preserved"); return false; }
+    ESP_LOGI(TAG,"PROCESS begin pending=%u storage=LOCAL; USB not used",count);
+    if(!count) return true;
+    work=fopen(workpath,"rb"); if(!work) return false;
+    unsigned normalized=0,existing=0,failed=0;
+    for(unsigned i=0;i<count;i++) {
+        char id[65],path[PATH_SIZE]; ingest_record_t record; bool created=false;
+        if(fread(id,1,sizeof(id),work)!=sizeof(id) || id[64]!=0 || !archive_hex_id(id)) { failed+=count-i; break; }
+        if(!ingest_receipt_path(path,sizeof(path),STORE,device_prefix,id) || !ingest_read_record(path,device_prefix,&record) ||
+           strcmp(record.receipt_id,id) || !normalize_receipt(path,&record,&created)) failed++;
+        else if(created) normalized++; else existing++;
+    }
+    if(fclose(work)) failed++;
+    ESP_LOGI(TAG,"PROCESS complete normalized=%u verified_existing=%u failed=%u; source untouched",normalized,existing,failed);
+    return !failed;
 }
 
 static bool group_reference(const char *reference,char id[65],char requested[160])

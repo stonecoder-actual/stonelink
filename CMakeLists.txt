@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-set(PROJECT_VER "0.7.0")
+set(PROJECT_VER "0.8.0")
 set(COMPONENTS src __pio_env)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(stonelink)

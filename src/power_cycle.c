@@ -16,6 +16,7 @@ static power_notice_fn notice;
 static int64_t deadline, reminder;
 static unsigned attempts;
 static bool result;
+static bool final_off;
 
 static void say(const char *message) { if(notice) notice(message); }
 static bool drive(bool on) {
@@ -35,7 +36,7 @@ static void wait_manual(power_phase_t next, int64_t now) {
 }
 void power_cycle_init(power_drive_fn output, power_notice_fn message) {
     drive_output=output; notice=message; mode=POWER_MANUAL; phase=POWER_IDLE;
-    deadline=0; attempts=0; result=false;
+    deadline=0; attempts=0; result=false; final_off=false;
 }
 bool power_cycle_set_mode(power_mode_t next) {
     if(phase!=POWER_IDLE || (next!=POWER_MANUAL && next!=POWER_GPIO)) return false;
@@ -53,6 +54,7 @@ power_phase_t power_cycle_phase(void) { return phase; }
 int64_t power_cycle_deadline(void) { return deadline; }
 unsigned power_cycle_attempts(void) { return attempts; }
 bool power_cycle_busy(void) { return phase!=POWER_IDLE; }
+bool power_cycle_off_confirmed(void) { return final_off; }
 const char *power_cycle_phase_name(void) {
     static const char *names[]={"IDLE","WAIT_OFF","OFF_HOLD","WAIT_ON","SETTLE",
                                "WAIT_DEVICE","WORK","RETRY","WAIT_FINAL_OFF","DONE"};
@@ -60,7 +62,7 @@ const char *power_cycle_phase_name(void) {
 }
 bool power_cycle_begin(int64_t now) {
     if(phase!=POWER_IDLE) return false;
-    attempts=0; result=false;
+    attempts=0; result=false; final_off=false;
     if(mode==POWER_MANUAL) wait_manual(POWER_WAIT_OFF,now);
     else if(drive(false)) {
         say("POWER GPIO21=0; external supply commanded OFF; holding 10 seconds");
@@ -82,7 +84,7 @@ bool power_cycle_confirm(bool on, int64_t now) {
         phase=POWER_SETTLE; deadline=now+SETTLE_MS;
     } else if(!on && phase==POWER_WAIT_FINAL_OFF) {
         say("POWER manual final OFF confirmed; source released");
-        phase=POWER_DONE; deadline=0;
+        final_off=true; phase=POWER_DONE; deadline=0;
     } else return false;
     return true;
 }
@@ -92,19 +94,19 @@ void power_cycle_finish(bool success, int64_t now) {
     if(mode==POWER_MANUAL) wait_manual(POWER_WAIT_FINAL_OFF,now);
     else if(drive(false)) {
         say("POWER GPIO21=0; collection released; external supply commanded OFF");
-        phase=POWER_DONE; deadline=0;
+        final_off=true; phase=POWER_DONE; deadline=0;
     }
 }
 void power_cycle_cancel(void) {
     if(phase==POWER_IDLE || phase==POWER_DONE) return;
     result=false;
-    if(mode==POWER_GPIO) drive(false);
+    if(mode==POWER_GPIO && drive(false)) final_off=true;
     say("POWER CANCELED; collection failed; manual users disconnect external +5 V; no VBUS measurement");
     phase=POWER_DONE; deadline=0;
 }
 void power_cycle_abandon(void) {
     say("POWER ERROR storage release failed; supply unchanged; REINIT required before another collection");
-    result=false; phase=POWER_DONE; deadline=0;
+    result=false; final_off=false; phase=POWER_DONE; deadline=0;
 }
 bool power_cycle_tick(int64_t now, bool present) {
     if(phase==POWER_WAIT_OFF || phase==POWER_WAIT_ON || phase==POWER_WAIT_FINAL_OFF) {

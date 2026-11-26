@@ -32,6 +32,7 @@
 #include "nvs.h"
 #include "driver/gpio.h"
 #include "power_cycle.h"
+#include "media_io.h"
 
 // Fail closed: only the mounted local SD's registered drive may write.
 // USB and unknown drives remain protected, regardless of mount order.
@@ -70,6 +71,7 @@ static job_kind_t job;
 static uint32_t job_id;
 static int64_t job_started;
 static bool power_managed, power_gpio_ready;
+static char job_source[768]="/usb";
 static void start_collection(job_kind_t kind);
 static bool check(esp_err_t e, const char *what) {
     if (e != ESP_OK) ESP_LOGE(TAG, "%s: %s (0x%x)", what, esp_err_to_name(e), e);
@@ -163,10 +165,11 @@ static void read_file(const char *path) {
     FILE *f = fopen(path,"rb");
     if (!f) { ESP_LOGE(TAG,"open %s errno=%d",path,errno); return; }
     uint8_t buf[4096]; uint32_t crc=0xffffffff; uint64_t total=0; size_t n;
+    media_io_guard_t guard; media_io_begin(&guard);
     while (!removed && (n=fread(buf,1,sizeof(buf),f))) {
         total+=n;
-        for (size_t i=0;i<n;i++) { crc ^= buf[i]; for(int b=0;b<8;b++) crc=(crc>>1)^((crc&1)?0xedb88320:0); }
-        vTaskDelay(1);
+        crc=media_crc32_update(crc,buf,n);
+        media_io_checkpoint(&guard);
     }
     bool ok = !removed && !ferror(f) && total == (uint64_t)st.st_size;
     fclose(f);
@@ -298,6 +301,7 @@ static void collection_complete(bool ok) {
 static void start_collection(job_kind_t kind) {
     if(job!=JOB_NONE || power_cycle_busy()) { LOG("COLLECT busy; use POWER STATUS"); return; }
     job=kind; job_id++; job_started=esp_timer_get_time()/1000;
+    strcpy(job_source,"/usb");
     watch=false; power_managed=true; usb_retry_paused=true;
     if(job_is_soak()) {
         soak_cycles++;
@@ -328,17 +332,24 @@ static void service_collection(void) {
                 power_cycle_abandon(); return;
             }
         } else {
-            bool ok=job_is_copy()?local_storage_copy("/usb",source_available):collection_plan(source_available);
+            bool ok=job_is_copy()?local_storage_receive(job_source,source_available):collection_plan(source_available);
             if(!release_disk()) {
                 LOG("COLLECT cleanup failed; supply unchanged; REINIT required");
                 power_cycle_abandon(); return;
             }
-            LOG("COLLECT data result=%s; source released; completing power workflow",ok?"SUCCESS":"FAILED");
+            LOG("COLLECT source-work result=%s; source released; local processing waits for final OFF",ok?"SUCCESS":"FAILED");
             power_cycle_finish(ok,esp_timer_get_time()/1000);
         }
     }
     bool ok;
-    if(power_cycle_result(&ok)) collection_complete(ok);
+    if(power_cycle_result(&ok)) {
+        if(job_is_copy()) {
+            if(!disk && !vfs && power_cycle_off_confirmed()) {
+                bool processed=local_storage_process_inbox(); ok=ok && processed;
+            } else LOG("Local inbox processing deferred; finish external OFF, then use PROCESS");
+        }
+        collection_complete(ok);
+    }
 }
 static void soak_run(void) { start_collection(soak_mode==2?JOB_SOAK_COPY:JOB_SOAK_PLAN); }
 static void soak_command(const char *arg) {
@@ -372,7 +383,12 @@ static void command(char *line) {
     if(power_cycle_busy() && strcasecmp(line,"POWER") && strcasecmp(line,"STATUS") && strcasecmp(line,"HELP") && !soak_control) {
         LOG("Power workflow active; use POWER STATUS, POWER OFF/ON, POWER CANCEL or SOAK OFF"); return;
     }
-    if (!strcasecmp(line,"HELP")) LOG("HELP | STATUS | DEVICE | META /usb/path | HD [SHOW filename_or_capture_id|LIST|NEXT|REQUEST filename_or_capture_id|CANCEL request_id|RETRY request_id] | POWER [STATUS|MODE MANUAL|MODE GPIO|OFF|ON|CANCEL] | COLLECT [PLAN|COPY] | SCAN | READ /usb/path | RESET | REINIT | RETRY | WATCH [ON|OFF] | PLAN [RESET] | SCHEDULE [ON|OFF|NOW|STATUS|EVERY seconds] | SDMOUNT | SDSTATUS | SDSCAN | COPY /usb/file | COPYALL | SOAK [ON|COPY|OFF|STATUS|NOW|EVERY seconds]");
+    if (!strcasecmp(line,"HELP")) LOG("HELP | STATUS | DEVICE | COPYMODE [FAST|VERIFY|STATUS] | PROCESS | META /usb/path | HD [SHOW filename_or_capture_id|LIST|NEXT|REQUEST filename_or_capture_id|CANCEL request_id|RETRY request_id] | POWER [STATUS|MODE MANUAL|MODE GPIO|OFF|ON|CANCEL] | COLLECT [PLAN|COPY] | SCAN | READ /usb/path | RESET | REINIT | RETRY | WATCH [ON|OFF] | PLAN [RESET] | SCHEDULE [ON|OFF|NOW|STATUS|EVERY seconds] | SDMOUNT | SDSTATUS | SDSCAN | COPY /usb/file | COPYALL | SOAK [ON|COPY|OFF|STATUS|NOW|EVERY seconds]");
+    else if(!strcasecmp(line,"COPYMODE")) local_storage_copy_mode(arg);
+    else if(!strcasecmp(line,"PROCESS")) {
+        watch=false; power_managed=true; usb_retry_paused=true;
+        if(release_disk()) local_storage_process_inbox();
+    }
     else if(!strcasecmp(line,"HD")) local_storage_hd(arg);
     else if(!strcasecmp(line,"DEVICE")) local_storage_identity();
     else if(!strcasecmp(line,"META")) {
@@ -426,12 +442,12 @@ static void command(char *line) {
     else if (!strcasecmp(line,"SDSTATUS")) local_storage_status();
     else if (!strcasecmp(line,"SDSCAN")) local_storage_scan();
     else if (!strcasecmp(line,"COPY") || !strcasecmp(line,"COPYALL")) {
-        if (!source_available()) LOG("COPY requires mounted USB source");
-        else if (!strcasecmp(line,"COPY") && (!arg || !*arg)) LOG("Use COPY /usb/path/to/file");
-        else if (!local_storage_copy(!strcasecmp(line,"COPYALL") ? "/usb" : arg, source_available)) {
-            LOG("COPY aborted; releasing USB mount before further attempts");
-            release_disk();
-            acquisition_result(false);
+        if(soak_mode) LOG("Use SOAK NOW, or SOAK OFF before a one-shot copy");
+        else if(!strcasecmp(line,"COPY") && (!arg || !*arg || (strcmp(arg,"/usb") && strncmp(arg,"/usb/",5)) ||
+                strstr(arg,"..") || strchr(arg,'\\') || strchr(arg,':'))) LOG("Use COPY /usb/path/to/file or COPYALL");
+        else {
+            start_collection(JOB_COPY);
+            if(job==JOB_COPY && arg && !strcasecmp(line,"COPY")) snprintf(job_source,sizeof(job_source),"%s",arg);
         }
     }
     else if (!strcasecmp(line,"STATUS")) { status(); power_status(); }
@@ -447,8 +463,9 @@ void app_main(void) {
     int input_flags = fcntl(STDIN_FILENO, F_GETFL);
     if (input_flags >= 0) fcntl(STDIN_FILENO, F_SETFL, input_flags | O_NONBLOCK);
     LOG("StoneLink USB diagnostics; timestamps are boot milliseconds; external supply power workflow available");
-    LOG("BOOT version=0.7.0 reset_reason=%d",esp_reset_reason());
+    LOG("BOOT version=0.8.0 reset_reason=%d",esp_reset_reason());
     local_storage_identity();
+    local_storage_copy_mode("STATUS");
     power_cycle_init(power_drive,power_notice);
     power_status();
     soak_load();

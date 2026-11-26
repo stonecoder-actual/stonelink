@@ -30,3 +30,4 @@ void power_cycle_finish(bool success, int64_t now_ms); // Caller releases MSC fi
 void power_cycle_cancel(void); // GPIO goes LOW; manual state remains unverified.
 void power_cycle_abandon(void); // Cleanup failed: stop WITHOUT changing supply.
 bool power_cycle_result(bool *success); // Consumes DONE and returns to IDLE.
+bool power_cycle_off_confirmed(void); // Final OFF acknowledgment/command, not measured VBUS.
