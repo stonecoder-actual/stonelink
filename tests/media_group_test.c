@@ -68,6 +68,13 @@ int main(void) {
     unsigned previous=moves;
     assert(media_group_reconcile("/archive",prefix,NULL,NULL,&result)); assert(previous==moves); // Idempotent repeat.
 
+    reset(); add_asset('a',200,"SD",true,"VIDEO");
+    assert(media_group_reconcile("/archive",prefix,NULL,NULL,&result)); quality(0,"SD");
+    add_asset('b',100,"SD",true,"VIDEO");
+    assert(media_group_reconcile("/archive",prefix,NULL,NULL,&result)); quality(0,"HD"); quality(1,"SD");
+    add_asset('c',50,"SD",true,"VIDEO");
+    assert(media_group_reconcile("/archive",prefix,NULL,NULL,&result)); quality(0,"HD"); quality(2,"SD");
+
     // Missing dates cannot associate distinct assets or create an HD claim.
     reset(); add_asset('a',100,"HD",false,"VIDEO"); add_asset('b',200,"SD",false,"VIDEO");
     assert(media_group_reconcile("/archive",prefix,NULL,NULL,&result)); quality(0,"SD"); quality(1,"SD");

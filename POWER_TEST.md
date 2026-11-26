@@ -1,5 +1,10 @@
 # External USB power workflow — firmware 0.5.0
 
+0.7.0 update supersedes the naming notes below: archive filenames now carry
+PHOTO/VIDEO and size-based SD/HD flags, grouped by ESP and exact camera time.
+They can be reclassified as matching files arrive. HD requests use the archived
+filename and persist locally. See MEDIA_ARCHIVE.md; no radio sender is attached.
+
 0.6.0 update: power procedures are unchanged. New copies use factory-MAC ESP
 prefixes, embedded camera dates, SHA-256 and JSON records; see MEDIA_ARCHIVE.md.
 Old CRC-layout copies remain and are not automatically migrated. First copy

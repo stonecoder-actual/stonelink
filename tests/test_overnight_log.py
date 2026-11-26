@@ -37,6 +37,13 @@ class LogEvents(unittest.TestCase):
             "I (3) local_sd: DEVICE prefix=ESP-AABBCCDDEEFF": "device_identity",
             "I (3) local_sd: META source=/usb/file.mp4 camera_datetime=2026-11-26 14:30:05": "capture_metadata",
             "I (3) local_sd: CATALOG VERIFIED path=/sd/file.json": "catalog_verified",
+            "I (3) local_sd: CAPTURE id=123 kind=PHOTO": "capture_group",
+            "I (3) media_group: MEDIA FLAG from=a to=b": "media_reclassified",
+            "I (3) media_group: MEDIA GROUP files=2": "media_group",
+            "I (3) transfer: HD QUEUED request=123": "hd_queued",
+            "I (3) transfer: HD ALREADY QUEUED request=123": "hd_duplicate",
+            "I (3) transfer: HD READY request=123; NOT TRANSMITTED": "hd_ready",
+            "W (3) transfer: HD BLOCKED request=123": "hd_blocked",
         }
         for line, expected in cases.items():
             with self.subTest(line=line):

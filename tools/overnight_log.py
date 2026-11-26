@@ -33,6 +33,12 @@ def classify(line):
         ("POWER STATUS", "power_status"),
         ("CATALOG VERIFIED", "catalog_verified"), ("META source=", "capture_metadata"),
         ("DEVICE prefix=", "device_identity"),
+        ("CAPTURE id=", "capture_group"), ("MEDIA FLAG", "media_reclassified"),
+        ("MEDIA GROUP", "media_group"), ("HD QUEUED", "hd_queued"),
+        ("HD ALREADY QUEUED", "hd_duplicate"), ("HD READY", "hd_ready"),
+        ("HD BLOCKED", "hd_blocked"), ("HD CANCELED", "hd_canceled"),
+        ("HD REQUEUED", "hd_requeued"), ("HD QUEUE pending=", "hd_queue"),
+        ("HD UNAVAILABLE", "hd_unavailable"),
     ]:
         if text in line:
             return kind
@@ -82,7 +88,8 @@ def main():
             counts[kind] += 1
             if kind in ("boot", "health", "cycle_success", "cycle_failed", "copy_verified",
                         "collect_success", "collect_failed", "power_action", "power_status",
-                        "device_identity", "capture_metadata", "catalog_verified"):
+                        "device_identity", "capture_metadata", "catalog_verified",
+                        "capture_group", "hd_queued", "hd_ready", "hd_blocked", "hd_queue"):
                 latest[kind] = line
             stamp = timestamp()
             events.write(json.dumps({"utc": stamp, "kind": kind, "text": line})+"\n")

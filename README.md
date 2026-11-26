@@ -1,10 +1,12 @@
 # StoneLink media collector
 
-Firmware 0.6.0 adds factory-MAC ESP prefixes, camera-clock date/time archive
-filenames, SHA-256 integrity and JSON metadata records for later web ingestion.
-See [MEDIA_ARCHIVE.md](MEDIA_ARCHIVE.md) for the current naming/date policy and
-DEVICE/META test. Camera clock values are not timezone-converted. Missing dates
-are labeled UNKNOWN. Older archive layouts below describe earlier releases.
+Firmware 0.7.0 tracks media directly in camera-independent filenames:
+`<ESP-prefix>_<camera-date>_<camera-time>_PHOTO-or-VIDEO_SD-or-HD_<sha256>`.
+Files group by ESP, exact camera clock and type. A lone file stays SD; with
+multiple distinct versions, a uniquely larger file becomes HD and smaller files
+remain SD. Later arrivals reconcile existing flags. HD requests can use an
+archived filename and persist on local SD; no transport is attached yet.
+See [MEDIA_ARCHIVE.md](MEDIA_ARCHIVE.md) for rules, edge cases and bench commands.
 
 ESP32-S3 USB host experiment for the SPYPOINT CL-CBL adapter, with verified local FAT32/exFAT archiving. Media collection accepts only MP4 and JPEG files (.mp4/.jpg/.jpeg, case-insensitive), using the shared external USB power workflow for one-shot collection, scheduling and soak tests. Default MANUAL mode pauses for human power confirmations; opt-in GPIO mode controls a suitable active-high switch on GPIO21. Source deletion and radio transmission remain unimplemented. Automatic-switch validation remains bench work.
 
@@ -47,7 +49,7 @@ COPY /usb/cell_std/100MEDIA/DSCF0001.JPG
 
 ## Copy behavior
 
-COPY/COPYALL, COLLECT COPY and enabled SOAK COPY create archives; mounting alone never copies. New media lives under `/sd/stonelink/<ESP-prefix>/<camera-date>/`, with prefix/date/time/variant/original-name/SHA256 filenames and verified JSON records. Missing dates are explicit UNKNOWN values. Existing media must match size, CRC32 and SHA256 before a verified skip; incompatible records/files are preserved and fail the batch. Older CRC-directory archives remain in place without automatic migration. See MEDIA_ARCHIVE.md for the naming and time policy.
+COPY/COPYALL, COLLECT COPY and enabled SOAK COPY create archives; mounting alone never copies. New media lives under `/sd/stonelink/<ESP-prefix>/captures/<group-id>/`, with prefix/date/time/PHOTO-or-VIDEO/SD-or-HD/SHA256 filenames. Missing dates stay UNKNOWN and SD. Existing media must match size, CRC32 and SHA256 before a verified skip. Flags follow timestamp/type/size, with no camera-folder or sequence assumptions. Older archive layouts remain in place without automatic migration. See MEDIA_ARCHIVE.md for the filename and queue policy.
 
 A new file is first checksummed from source, then read again into reserved `/sd/stonelink/.incoming.part`. Stream checksum and source size/mtime must remain consistent. Destination is flushed/fsynced/closed, reopened and fully checksummed, renamed to its archive path, then reopened/checked again. Only then is COPY VERIFIED logged. On failure the batch stops and the USB mount is released; the next copy overwrites the reserved partial staging file. Completed files from earlier in the batch remain. FAT power-loss recovery is not guaranteed: after reboot existing archive files are reverified before skipping. This is why source deletion remains disabled.
 
@@ -65,6 +67,8 @@ The original 0.1.0 guard rejected every drive write. Version 0.2.0 deliberately 
 | --- | --- |
 | HELP / STATUS | USB state and command list |
 | DEVICE | Stable factory-MAC ESP prefix |
+| HD SHOW / REQUEST filename | Inspect timestamp/type group or queue its current HD using an archived filename |
+| HD LIST / NEXT / CANCEL request_id / RETRY request_id | Persistent queue controls; NEXT verifies readiness without transmitting |
 | META /usb/path | Inspect JPEG/MP4 camera time without copying; mounted source required |
 | SCAN | List USB source |
 | READ /usb/path | CRC32/ISO-HDLC; no path selects first discovered JPEG |

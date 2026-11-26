@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <string.h>
+#include <stdio.h>
 
 #define PATH_SIZE 768
 static const char *TAG="transfer";

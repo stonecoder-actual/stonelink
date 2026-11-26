@@ -460,3 +460,46 @@ SD and end-to-end SHA verified repeat still require the MEDIA_ARCHIVE.md bench
 test. Compiler initially rejected a date-format range inference; explicit day
 bounds fixed the warning, and final build has no such error.
 
+# Firmware 0.7.0 camera-independent filename flags and local HD queue
+
+Latest user requirement supersedes camera-folder/original-name pairing. Matching
+now uses ESP prefix, exact parsed camera timestamp (whole seconds) and PHOTO or
+VIDEO. Every lone asset is SD; with multiple distinct files the uniquely largest
+by bytes becomes HD and smaller assets SD. Largest ties remain SD. Filenames
+encode prefix/date/time/type/quality/full SHA-256 and are authoritative. Original
+source names/folders do not participate. JPG/JPEG normalize to PHOTO/.jpg; MP4
+to VIDEO/.mp4. Missing times are isolated per content/device/type and stay SD.
+New-format groups reconcile after copy and before HD selection, demoting stale
+HD flags before promotion and restarting enumeration after each rename. No media
+sidecar is needed; old-format archives are preserved rather than migrated.
+
+Added persistent HD queue keyed by group and exact HD content fingerprint.
+REQUEST accepts an archived filename or capture ID; SHOW/LIST/NEXT/CANCEL/RETRY
+support supervised bench testing. Targets require valid current HD flags and a
+complete size/SHA verification. FIFO sequence is restored from on-card requests,
+duplicate requests are idempotent, staging is fsynced/read back before publish,
+and failures never mark transmission complete. NEXT reports READY only; later
+classification changes block the old pinned request until canceled/resolved.
+Queue files are local; no radio, network transport or delivery acknowledgment.
+
+Final PlatformIO 0.7.0 build SUCCESS: 457,204 flash / 36,536 static RAM bytes.
+Firmware SHA256 af4f87fc9120ee4155c3772d29430bc16d5061c50970a6eea5a7b64ed460e176.
+Final ELF audit: 26 wrapped FatFs writes, one guarded original dispatcher call.
+git diff --check passes. Host tests PASS for production metadata/naming, new
+group reconciliation, queue JSON and queue I/O, existing planner/power policy,
+and all 3 Python logger tests. Group tests include larger-first and smaller-first
+arrivals, three versions, equal-size ties, unknown dates, type mismatch, duplicate
+aliases, idempotence, failed demotion/promotion and recovery without deletion.
+Queue I/O tests simulate reboot, FIFO, deduplication, cancel/retry, blocked targets,
+fsync/rename faults and corrupt pending records, using fake files and a clearly
+marked deterministic hash double. Firmware uses actual mbedTLS and cJSON. No
+physical disks are touched by host tests. Initial embedded compilation caught
+header/type-format issues, fixed before the successful final build.
+
+No agent upload, camera-specific timestamp confirmation, physical classification
+rename/queue reboot recovery or transmission test performed. Next: upload, inspect
+META, finish supervised COLLECT COPY, inspect final PHOTO/VIDEO SD/HD filenames,
+repeat for verified skips, request HD using a final SD filename, check LIST/NEXT,
+reboot/mount and verify persistence. Actual FAT power-loss recovery and stack/heap
+watermarks need hardware evidence. Full procedure/limits in MEDIA_ARCHIVE.md.
+

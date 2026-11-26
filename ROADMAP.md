@@ -1,6 +1,19 @@
 # Roadmap
 
-## Current: firmware 0.6.0
+## Current: firmware 0.7.0
+
+Camera-independent timestamp/type groups and relative-size filename flags now
+supersede model-specific folder/sequence grouping. Lone files stay SD; a uniquely
+largest same-time/type asset becomes HD, equal largest ties remain SD. Filenames
+are authoritative; no media JSON catalog is required. Local reconciliation
+renames SD/HD flags after later arrivals and recovers conservatively from rename
+failures. Persistent HD requests accept archived filenames, verify exact targets,
+deduplicate, restore FIFO after reboot and support cancel/retry. READY is not
+transmission. Next validate actual camera timestamps, two-version copies,
+reclassification and queue recovery on hardware. Web endpoints/radio delivery
+and acknowledgments remain future work. See MEDIA_ARCHIVE.md.
+
+## Firmware 0.6.0 archive prototype (superseded naming)
 
 Added factory-base-MAC ESP prefix, camera-clock EXIF/MP4 timestamps with no
 timezone conversion, human-readable archive filenames, SHA-256 collision and

@@ -1,115 +1,157 @@
-# ESP identity and camera-clock archives — firmware 0.6.0
+# Camera-independent filename tracking — firmware 0.7.0
 
-Every ESP derives its prefix from all six bytes of its factory eFuse base MAC:
-`ESP-AABBCCDDEEFF`. It does not use a random boot ID, user label, configured
-Wi-Fi MAC or an NVS counter. Rebooting, reflashing or erasing NVS does not change
-this factory-derived prefix. The complete 48-bit MAC is retained for fleet
-deconfliction. No server-side device registry or web UI is implemented yet.
+This supersedes 0.6.0's original/folder-based variant naming and JSON media
+sidecars. Filenames now carry the media identity, grouping fields and SD/HD flag.
+Camera folder names and original camera filenames do not determine pairing.
 
-## Filenames and persistent records
-
-New archives use this layout (the abbreviated digest below represents the full
-64 hexadecimal SHA-256 characters used in actual filenames):
+## Filename and grouping rules
 
 ```text
-/sd/stonelink/ESP-AABBCCDDEEFF/2026-11-26/
-  ESP-AABBCCDDEEFF_2026-11-26_14-30-05_ORIGINAL_DSCF0001_<sha256>.mp4
-  ESP-AABBCCDDEEFF_2026-11-26_14-30-05_ORIGINAL_DSCF0001_<sha256>.mp4.json
+ESP-AABBCCDDEEFF_2026-11-26_14-30-05_PHOTO_SD_<sha256>.jpg
+ESP-AABBCCDDEEFF_2026-11-26_14-30-05_PHOTO_HD_<sha256>.jpg
+ESP-AABBCCDDEEFF_2026-11-26_14-30-05_VIDEO_SD_<sha256>.mp4
+ESP-AABBCCDDEEFF_2026-11-26_14-30-05_VIDEO_HD_<sha256>.mp4
 ```
 
-The filename begins with ESP prefix then camera date/time, using hyphens instead
-of colons for filesystem compatibility. Variant ORIGINAL, STD, HD or MEDIA and
-a sanitized original basename make each role recognizable. Full SHA-256 avoids
-overwriting different contents when the camera reuses names, repeats clock
-values or makes multiple captures per second. Basenames are limited to 32 safe
-characters; the full original path remains in the metadata record. Identical
-content/name/time from different source paths that resolves to one archive but
-has incompatible provenance fails with a preserved-catalog error, not overwrite.
+Actual filenames contain the full 64-character SHA-256 digest. Prefix is all
+six bytes of the factory eFuse base MAC, stable across reboot/reflash/NVS erase.
+PHOTO covers JPG/JPEG, with archive extension .jpg; VIDEO covers MP4. Original
+source filenames and files are untouched. Only MP4/JPG/JPEG sources are copied.
 
-Each media file has a JSON sidecar containing schema version, device_prefix,
-camera_datetime, time_source, timezone=camera_unspecified,
-timezone_conversion=false, variant, original source_path, archive_path, full
-sha256, byte count, crc32 and source_filesystem_mtime. This is a persistent,
-independently readable per-file catalog for future web ingestion. It does not
-depend on the RAM PLAN baseline and does not load a whole card index into RAM.
-Original/STD/HD are separately recorded assets; timestamps are read from each
-file independently, not forced to match. Shared basename alone is not proof
-that two files belong to the same capture after camera numbering resets.
+The timestamp group is exactly `(ESP prefix, camera date/time, PHOTO or VIDEO)`:
+
+- A single distinct file is SD, regardless of absolute size/resolution.
+- With multiple distinct files, a uniquely largest file by byte size is HD;
+  every smaller file is SD. This also handles three or more versions.
+- Equal-size largest ties have no uniquely larger version: all remain SD and
+  largest_ties is reported. No arbitrary file is queued as HD.
+- Identical bytes are one asset, even if copied from different camera folders.
+  Content fingerprints preserve different files at the same timestamp.
+- PHOTO and VIDEO at the same second are separate groups. No filename sequence,
+  model-specific directory or standard/HD camera-folder convention is assumed.
+
+These are relative file-size labels following the requested rule, not decoded
+pixel-resolution measurements. Same-second independent captures of the same
+type will share a timestamp group; time/type/size alone cannot prove they are
+versions of one sensor event. Camera clock correctness is the user's responsibility.
+
+Internal layout is `/sd/stonelink/<prefix>/captures/<group-id>/<filename>`.
+Known-time group ID is SHA-256 of the exact UTF-8/ASCII key
+`capture-v3|<prefix>|YYYY-MM-DD HH:MM:SS|PHOTO` (or VIDEO). The future web app can
+group directly from filenames; the ID is a directory/queue routing convenience.
+No per-media JSON index is required. Queue state is stored separately as JSON.
+
+## Later arrivals and rename recovery
+
+After a verified copy, the ESP rescans that local group and reconciles the flags.
+If a new largest version arrives, the former HD becomes SD and the new file
+becomes HD. A lone file can also become HD when a smaller matching file arrives.
+The fingerprint is unchanged through renames. A client holding the old SD/HD
+filename can still identify the asset by its prefix/time/type/fingerprint.
+
+Incorrect HD flags are demoted before the unique largest file is promoted.
+Directory enumeration restarts after every rename so moving FAT entries do not
+skip other files. No payload is deleted, rewritten or overwritten. On a rename
+failure, the cycle fails and media is retained. Next copy, HD SHOW or HD request
+reconciles the group again. Duplicate SD/HD aliases for the same fingerprint,
+foreign/malformed files inside a group or incomplete scans stop reconciliation.
+Group enumeration has an explicit 10,000-entry bound; it does not silently use
+a partial inventory. During a copy, earlier COPY lines can name a provisional SD
+path; MEDIA FLAG logs subsequent renames. Inspect final names after cycle end.
+
+Legacy CRC-directory and 0.6.0 archives remain in place, with no automatic
+migration. New-format copies may duplicate old-format media once. This update
+reclassifies only its own new-format groups.
 
 ## Camera date policy
 
-- JPEG: EXIF DateTimeOriginal, falling back to DateTimeDigitized. TIFF byte
-  orders II and MM are supported. Ordinary IFD0 modification DateTime is not
-  silently substituted for capture time.
-- MP4: moov/mvhd creation time (versions 0 and 1); valid track/media header
-  creation time is a fallback. The 1904 epoch is decoded to calendar fields.
-  mdat video contents are skipped, not decoded.
-- No timezone conversion, DST correction or ESP/laptop clock replacement occurs.
-  EXIF timezone offsets are not applied. MP4 integer dates nominally use UTC,
-  but cameras often store local clock values; this build preserves the encoded
-  calendar fields without applying an offset. Compare META output to the camera
-  clock/overlay in the next bench test to establish what this camera writes.
-- User is responsible for setting the camera's clock/timezone. Valid but wrong
-  camera dates are preserved. Invalid or missing dates use UNKNOWN_CAPTURE_TIME
-  in filenames, UNKNOWN_DATE directories and null camera_datetime in JSON.
-  Filesystem mtime is recorded separately, never claimed as capture time.
-- Readers bound offsets, recursion/entry counts and read operations. Truncated
-  or unsupported metadata can yield UNKNOWN; actual source I/O errors abort the
-  copy instead of publishing a guessed timestamp. No date is read from burned-in
-  image/video text. Proprietary string tags are not yet parsed.
+JPEG uses EXIF DateTimeOriginal, falling back to DateTimeDigitized. MP4 uses
+movie creation time (v0/v1), falling back to track/media creation time. Readers
+bound offsets, read counts and recursion and skip compressed payloads. The
+camera's encoded calendar values are preserved without timezone/DST conversion
+or ESP/laptop time substitution. QuickTime's 1904 epoch is decoded without a
+timezone adjustment; compare META output against this camera's clock/overlay.
+Current matching precision is whole seconds; EXIF sub-second tags are not parsed.
 
-## Integrity, repeats and interruption
+Missing, invalid or unsupported dates are named UNKNOWN_CAPTURE_TIME. Such
+assets are isolated by device/type/content, remain SD and are not automatically
+paired or offered as HD. Ordinary filesystem modification time is not silently
+called capture time. Actual I/O errors abort reads/copies. META reports what was
+found and which metadata source supplied it; no timestamp is read from burned-in
+image/video text or assumed from a camera-specific filename.
 
-Source prepass computes CRC32 plus SHA-256 in the same read. The streamed copy,
-staged local readback and final archive readback must match both checksums and
-size. Source size/mtime must remain stable. Existing media is rehashed before a
-verified skip. The JSON record is written to reserved .catalog.part, fsynced,
-closed and read back before rename; existing incompatible records are preserved
-and fail the batch. Missing JSON after interrupted publication is reconstructed
-on the next verified repeat without recopying completed media. COPY VERIFIED or
-COPY SKIP is reported only after the record is present and verified.
+## HD request queue (local prototype)
 
-The previous CRC-directory archives are retained in place. This release does not
-automatically rename or migrate old copies. First collection under this layout
-can create another verified copy; subsequent repeats use SHA-named paths. FAT
-filesystem operations are not guaranteed crash-atomic; interruption and recovery
-still need physical testing. Source files are never renamed, written or deleted.
-The source MP4/JPG/JPEG allowlist remains active; local JSON/log/staging files are
-generated by firmware and are not copies of camera non-media files.
-
-## Next bench test
-
-Upload 0.6.0 after closing COM6 monitors. Reopen monitor/logger and stop restored
-SOAK with SOAK OFF. Run DEVICE and retain its prefix. With a powered, mounted
-source (explicit RETRY remounts when necessary), run:
+After new-format copies finish and local SD is mounted:
 
 ```text
-META /usb/DCIM/101MEDIA/DSCF0001.MP4
+HD SHOW <archived-filename-or-capture-id>
+HD REQUEST <archived-SD-filename>
+HD LIST
+HD NEXT
+HD CANCEL <request-id>
+HD RETRY <request-id>
 ```
 
-Use an actual path from SCAN; also inspect a JPEG after the next photo capture.
-META prints camera_datetime, time_source and conversion=NONE without copying.
-If this camera supplies only unsupported/missing timestamps, report the output;
-do not substitute host time. Run COLLECT COPY using POWER_TEST.md's manual power
-prompts. Look for META, CATALOG VERIFIED and COPY VERIFIED naming the prefix/date.
-Repeat unchanged collection and require COPY SKIP verified. Independently inspect
-JSON and play an archived video on a PC. No web server, Wi-Fi or LoRa is added.
+The reference may be just the archived filename or its full local path. SHOW
+reconciles the group and lists current filenames. REQUEST parses the same
+prefix/time/type fields, verifies the referenced asset exists, selects the
+group's uniquely larger HD and verifies its complete SHA-256/size before
+enqueueing. A capture ID from CAPTURE/HD logs is also accepted for bench tests.
+Missing HD, missing dates or equal-size largest ties produce HD UNAVAILABLE;
+no pretend enqueue is reported. Default old camera-folder preferences are gone.
 
-## Software checks
+Queue files live under `/sd/stonelink/<prefix>/queue`. Request ID is SHA-256 of
+`HD-v1|<group-id>|<HD-content-sha256>`, so repeated requests for the same version
+are idempotent. Pending jobs pin full filename/path, checksum and bytes, along
+with the requested preview filename and a persistent FIFO sequence. Publication
+uses a reserved .job.part file, fsync/readback and rename. Cancellation/retry
+renames the local request record; archived media is not deleted. No RAM-only
+queue or NVS counter is needed to restore requests after reboot.
 
-tests/capture_metadata_test.c executes production parsers/naming on synthetic
-JPEG II/MM DateTimeOriginal/Digitized, invalid leap days, out-of-range offsets,
-oversized IFD counts, every truncation point, MP4 v0/v1 (including 2050), unset
-dates, track fallback, extended atom sizes and skipped video payloads. It checks
-stable/different MAC prefixes, collision separation by SHA/variant, unknown time,
-path length rejection and JSON escaping. These are format/policy tests; real
-camera metadata and local power-loss behavior are not simulated.
+NEXT verifies the oldest pending job against the current classification and
+rehashes its media. It reports READY, not delivery. Missing/corrupt media or a
+new largest version blocks the old request rather than silently retargeting it.
+It remains pending; cancel its request ID and request the newly classified HD
+if desired. Canceled retries retain the original pinned version and sequence.
+The current prototype blocks at an invalid oldest request until resolved or
+canceled. No radio/Wi-Fi sender, acknowledgment, automatic delivered state or
+web endpoint exists yet. No queue operation claims transmission succeeded.
 
-```powershell
-& '.\.pio\host-tools\tcc\tcc.exe' -Itests/host_stubs -Isrc -run tests/capture_metadata_test.c
-```
+## Copy integrity and next bench test
 
-References: ESP-IDF 5.4 esp_mac.h API (installed pinned framework),
-[EXIF tags](https://exiftool.org/TagNames/EXIF.html),
-[QuickTime date conventions](https://exiftool.org/TagNames/QuickTime.html),
-[QuickTime format](https://developer.apple.com/documentation/quicktime-file-format).
+Source prepass, streaming copy, local staging readback and final archive readback
+must agree on size, CRC32 and SHA-256. Existing media is reverified before skip.
+Source size/mtime must stay stable. Filenames are parsed strictly before local
+classification or queue routing. Source write barrier remains active.
+
+Upload 0.7.0, stop restored SOAK, run DEVICE, SDMOUNT and SDSTATUS. With the source
+powered/mounted (RETRY if needed), inspect a real file with META. Then use
+COLLECT COPY and POWER_TEST.md's manual supply prompts. Wait for the final OFF
+confirmation/cycle result, then SDSCAN or HD SHOW. Verify a known same-time/type
+pair becomes SD/HD according to size. Repeat unchanged copying and require
+verified skips with no duplicate assets. Request HD using the final SD filename;
+run HD LIST/NEXT, reboot, mount local SD and confirm the pending request remains.
+Independently play copied media and exercise rename/queue recovery on hardware.
+FAT operations are not guaranteed crash-atomic by these software simulations.
+
+## Host validation
+
+- capture_metadata_test.c: production JPEG/MP4 parsing, damaged/truncated input,
+  calendar/unknown-time policy, filename roundtrips and camera-independent keys.
+- media_group_test.c: production reconcile logic on a fake local directory;
+  lone SD, two/three versions, later larger/smaller arrivals, equal-size ties,
+  missing dates, type separation, duplicate aliases and failed rename recovery.
+- transfer_queue_test.c: production JSON format/parser using ESP-IDF's cJSON;
+  persistence roundtrip, pinned HD paths/checksums and malformed-field rejection.
+- transfer_queue_io_test.c: production queue I/O on fake files with target/fsync/
+  rename/corruption failures; FIFO, duplicates, reboot and cancellation/retry.
+  Its hash function is a deterministic test double, not a cryptography test;
+  firmware links real mbedTLS SHA-256. No physical disks/radios are used.
+
+Simple tests run with `.pio/host-tools/tcc/tcc.exe -Itests/host_stubs -Isrc -run
+tests/media_group_test.c` (or capture_metadata_test.c). Queue tests compile with
+the pinned framework's components/json/cJSON/cJSON.c and include directory;
+queue I/O tests additionally use -Itests/queue_stubs. Firmware build validates
+actual ESP-IDF dependencies. Real camera metadata/SD/radio behavior remains a
+hardware acceptance step.
