@@ -14,6 +14,7 @@ static void init(void) {
     writes=messages=0; gpio_ok=true;
     power_cycle_init(output,message);
     assert(power_cycle_mode()==POWER_MANUAL && !power_cycle_busy() && writes==0);
+    assert(!power_cycle_off_confirmed());
 }
 static void take(bool expected) {
     bool success=!expected;
@@ -22,6 +23,7 @@ static void take(bool expected) {
 }
 static void manual_work(void) {
     assert(power_cycle_begin(0));
+    assert(!power_cycle_off_confirmed());
     assert(!power_cycle_confirm(true,1));
     assert(power_cycle_confirm(false,2));
     assert(!power_cycle_confirm(true,10001));
@@ -34,6 +36,7 @@ static void manual_work(void) {
     assert(power_cycle_tick(15003,true));
     assert(!power_cycle_tick(15004,true)); // Work handed out exactly once.
     assert(power_cycle_attempts()==1);
+    assert(!power_cycle_off_confirmed());
 }
 int main(void) {
     init(); manual_work();
@@ -42,9 +45,13 @@ int main(void) {
     power_cycle_finish(true,20000);
     assert(power_cycle_phase()==POWER_WAIT_FINAL_OFF);
     assert(!power_cycle_result(NULL)); // Acquisition is not a completed cycle.
+    assert(!power_cycle_off_confirmed()); // Backend must wait for final OFF.
     assert(!power_cycle_confirm(true,20001));
     assert(power_cycle_confirm(false,20002));
-    take(true); assert(writes==0); // Manual mode must never command any GPIO.
+    take(true); assert(power_cycle_off_confirmed());
+    assert(power_cycle_begin(21000) && !power_cycle_off_confirmed());
+    power_cycle_cancel(); take(false); assert(!power_cycle_off_confirmed());
+    assert(writes==0); // Manual mode must never command any GPIO.
 
     init(); manual_work();
     power_cycle_acquisition_failed(15004);
@@ -67,6 +74,7 @@ int main(void) {
     assert(!power_cycle_confirm(false,300000)); take(false);
     init(); manual_work(); power_cycle_finish(true,20000);
     assert(!power_cycle_tick(320000,true)); take(false);
+    assert(!power_cycle_off_confirmed()); // Timeout is not an OFF confirmation.
     init(); manual_work(); power_cycle_finish(false,20000);
     assert(power_cycle_confirm(false,20001)); take(false);
 
@@ -82,6 +90,7 @@ int main(void) {
     assert(power_cycle_tick(20000,true));
     power_cycle_finish(true,21000);
     assert(writes==4 && !levels[3]); take(true);
+    assert(power_cycle_off_confirmed());
     assert(power_cycle_set_mode(POWER_MANUAL)); assert(!levels[writes-1]);
 
     init(); assert(power_cycle_set_mode(POWER_GPIO)); assert(power_cycle_begin(0));
@@ -97,6 +106,7 @@ int main(void) {
     power_cycle_tick(10000,true); assert(power_cycle_tick(15000,true));
     unsigned before=writes; power_cycle_abandon(); assert(writes==before);
     power_cycle_cancel(); assert(writes==before); take(false);
+    assert(!power_cycle_off_confirmed()); // Failed release prevents backend gate.
 
     init(); gpio_ok=false;
     assert(!power_cycle_set_mode(POWER_GPIO)); assert(!power_cycle_busy());

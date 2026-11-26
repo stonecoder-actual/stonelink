@@ -1,6 +1,12 @@
 # StoneLink media collector
 
-Firmware 0.7.0 tracks media directly in camera-independent filenames:
+Firmware 0.8.0 receives new media into a durable local inbox, releases USB and
+finishes the external OFF workflow, then verifies and organizes it on the ESP SD.
+Default FAST mode skips indexed files by source path, size and modification time;
+it does not reread old media. New/changed content precedes old recovery/audit work.
+See [MEDIA_ARCHIVE.md](MEDIA_ARCHIVE.md#receive-first-pipeline-080) for the bench test.
+
+Media tracking remains directly in camera-independent filenames:
 `<ESP-prefix>_<camera-date>_<camera-time>_PHOTO-or-VIDEO_SD-or-HD_<sha256>`.
 Files group by ESP, exact camera clock and type. A lone file stays SD; with
 multiple distinct versions, a uniquely larger file becomes HD and smaller files
@@ -31,7 +37,7 @@ Pinned dependencies: Espressif32 6.10.0, ESP-IDF 5.4.0 (3.50400.0), usb_host_msc
 
 ## Local microSD first test
 
-Board photos show N16R8, V1695 and an onboard slot. Initial mapping is inferred from the matching Freenove-style layout and manufacturer documentation: 1-bit SDMMC CMD=38, CLK=39, D0=40. Mount success on this exact board still requires hardware confirmation. No extra slot wires are required.
+Board photos show N16R8, V1695 and an onboard slot. Initial mapping is inferred from the matching Freenove-style layout and manufacturer documentation: 1-bit SDMMC CMD=38, CLK=39, D0=40. The user confirmed this mapping mounts the approximately 62.5 GB destination card. No extra slot wires are required.
 
 The pictured card is a 64 GB Gigastone microSDXC. This build supports FAT16/FAT32 **and exFAT** through the project-local FatFs override. A 64 GB card can retain its exFAT format; capacity itself does not establish the filesystem. Firmware never formats either card. If mounting fails, inspect the card on a PC and preserve any existing files before considering reformatting; do not treat every mount failure as a filesystem problem.
 
@@ -44,16 +50,18 @@ The pictured card is a 64 GB Gigastone microSDXC. This build supports FAT16/FAT3
 COPY /usb/cell_std/100MEDIA/DSCF0001.JPG
 ```
 
-5. Expect `COPY VERIFIED` with source, destination, bytes and CRC32. Run the same command again: expect `COPY SKIP verified` after checksumming both source and existing archive.
+5. Follow each POWER ACTION prompt, acknowledging after physically changing external +5 V. Expect RECEIVE STORED first; after final POWER OFF, local processing produces COPY VERIFIED. Repeat in default FAST mode: expect RECEIVE FAST SKIP and no old media payload reads.
 6. `SDSCAN` lists local copies. Use `COPYALL` to recursively archive MP4/JPEG files from /usb. Other file extensions are ignored. Empty directories are not archived. Traversal is bounded to 16 directory levels and 767-byte generated paths; failures abort the batch explicitly.
 
 ## Copy behavior
 
-COPY/COPYALL, COLLECT COPY and enabled SOAK COPY create archives; mounting alone never copies. New media lives under `/sd/stonelink/<ESP-prefix>/captures/<group-id>/`, with prefix/date/time/PHOTO-or-VIDEO/SD-or-HD/SHA256 filenames. Missing dates stay UNKNOWN and SD. Existing media must match size, CRC32 and SHA256 before a verified skip. Flags follow timestamp/type/size, with no camera-folder or sequence assumptions. Older archive layouts remain in place without automatic migration. See MEDIA_ARCHIVE.md for the filename and queue policy.
+COPY/COPYALL, COLLECT COPY and enabled SOAK COPY use the same receive/release/process workflow. Mounting alone never copies. The USB phase enumerates names, sizes and modification times, skips known entries using small local indexes, and streams new/changed files once into the ESP SD inbox. CRC32 and SHA-256 are calculated during that stream. Source size/mtime are checked again, and payload/receipt writes are flushed and synced before release. New content precedes known recovery or optional audit work.
 
-A new file is first checksummed from source, then read again into reserved `/sd/stonelink/.incoming.part`. Stream checksum and source size/mtime must remain consistent. Destination is flushed/fsynced/closed, reopened and fully checksummed, renamed to its archive path, then reopened/checked again. Only then is COPY VERIFIED logged. On failure the batch stops and the USB mount is released; the next copy overwrites the reserved partial staging file. Completed files from earlier in the batch remain. FAT power-loss recovery is not guaranteed: after reboot existing archive files are reverified before skipping. This is why source deletion remains disabled.
+After USB storage is released and final external OFF is confirmed/commanded, the ESP performs local readback, embedded timestamp extraction, archive deduplication, normalization and SD/HD reconciliation. Existing filename/HD queue rules remain unchanged. Source files are never deleted. No transport is attached. See MEDIA_ARCHIVE.md for recovery limitations and commands.
 
-Copy/hash operations run sequentially in the main task; USB library/MSC workers continue separately. WATCH and console responses pause during long copies. New large files require two source reads plus destination verification, so allow more time than READ alone. A camera wake can interrupt copying; source read errors, disconnects and checksum/length changes abort the operation. None of this guarantees a consistent shared filesystem while the camera is writing.
+FAST is the default after every boot. It trusts previously recorded path/size/mtime plus local record integrity and destination presence/size; it does not detect same-size corruption or a source replacement with the same fingerprint. COPYMODE VERIFY requests full source reads and local verification. A one-time pass establishes indexes for older archives. PROCESS retries pending local receipts without USB access; disconnect external +5 V before using it manually.
+
+Work runs sequentially in the main task; console commands pause during file operations. USB workers continue separately. Camera activity can still interrupt source access, so this minimizes the access window without proving exclusive ownership or filesystem consistency. Completed receipts survive interruptions; incomplete stages and unindexed orphan payloads are retained, and source files remain untouched.
 
 ## Source write protection
 

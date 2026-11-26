@@ -23,6 +23,11 @@ def classify(line):
     if "COLLECT end=" in line:
         return "collect_success" if "result=SUCCESS" in line else "collect_failed"
     for text, kind in [
+        ("RECEIVE FAST SKIP", "fast_skip"), ("RECEIVE ALREADY STAGED", "staged_skip"),
+        ("RECEIVE STORED", "received"), ("RECEIVE discovery", "receive_inventory"),
+        ("RECEIVE complete", "receive_complete"), ("RECEIVE aborted", "receive_failed"),
+        ("PROCESS begin", "process_start"), ("PROCESS complete", "process_complete"),
+        ("IOHASH medium=", "hash_timing"),
         ("SOAK HEALTH", "health"), ("COPY VERIFIED", "copy_verified"),
         ("COPY SKIP verified", "copy_skipped"), ("FAT filesystem mounted", "usb_mount"),
         ("USB device connected", "usb_connect"), ("USB device removed", "usb_remove"),
@@ -89,7 +94,8 @@ def main():
             if kind in ("boot", "health", "cycle_success", "cycle_failed", "copy_verified",
                         "collect_success", "collect_failed", "power_action", "power_status",
                         "device_identity", "capture_metadata", "catalog_verified",
-                        "capture_group", "hd_queued", "hd_ready", "hd_blocked", "hd_queue"):
+                        "capture_group", "hd_queued", "hd_ready", "hd_blocked", "hd_queue",
+                        "receive_inventory", "receive_complete", "receive_failed", "process_complete"):
                 latest[kind] = line
             stamp = timestamp()
             events.write(json.dumps({"utc": stamp, "kind": kind, "text": line})+"\n")

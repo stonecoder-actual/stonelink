@@ -503,3 +503,54 @@ repeat for verified skips, request HD using a final SD filename, check LIST/NEXT
 reboot/mount and verify persistence. Actual FAT power-loss recovery and stack/heap
 watermarks need hardware evidence. Full procedure/limits in MEDIA_ARCHIVE.md.
 
+
+# Firmware 0.8.0 receive-first collection and fast source index
+
+User's 0.7 bench repeat copied=0/skipped=8/ignored=4, with unchanged CRC/SHA
+and successful final OFF. From supplied timestamps, skips occupied 96.25 s
+(99,310 to 195,560 ms). Largest-file source/hash-metadata phase was 18.69 s;
+local verification about 12.47 s. This is the baseline, not a 0.8 measurement.
+User also confirmed timestamp-based SD/HD grouping, pending HD request/NEXT,
+and its persistence after ESP reset/SDMOUNT. The request remains local/unsent.
+
+0.8 splits reception from local processing. Source discovery uses stat metadata
+and small CRC-protected local records, then receives new/changed content before
+known recovery/audit work. Each received source body is streamed once to local
+inbox while calculating CRC32/SHA256, with pre/post size/mtime checks and synced
+payload/receipt publication. USB release and final external OFF occur before
+local readback, embedded metadata parsing, deduplication, naming and grouping.
+Completed inbox receipts can be processed after a later acquisition failure or
+reset without source access. FAST defaults after boot; VERIFY audits all media.
+Older archives need one pass to establish the source index. Same path/size/mtime
+replacements and same-size local corruption can evade FAST; no checksum claim
+is made for metadata skips. Collision evidence disables that fingerprint's fast
+path. No source deletions or network/radio transport added.
+
+Final PlatformIO 0.8.0 build SUCCESS: 466,044 flash / 37,320 static RAM bytes.
+Firmware SHA256 41d0b92d08c3fddc5ce6ce60758514d35b441ac96cc57dda895b3d5d80925288.
+Production ROM CRC is checked against Espressif's actual Linux ROM implementation,
+known ISO-HDLC vectors and the former bitwise algorithm across random lengths
+and chunked updates. Periodic-yield boundary checks PASS.
+
+Host pipeline test executes the production local_storage algorithmic body plus
+production ingest records, metadata parser, grouping and naming, with in-memory
+files/time and a deterministic SHA test double. Firmware uses real mbedTLS.
+PASS: exactly one USB payload pass, zero old USB and local media payload reads
+on FAST repeats, skipping completed pending inbox items, changed mtime/missing
+index cache rejection, CRC corruption/device mismatch rejection, new content
+first even under VERIFY, identical-fingerprint mutation audit/conflict handling,
+local processing with every USB access forbidden, interrupted later transfer
+preserving earlier completed files, and correct offline SD/HD reconciliation.
+Run `./tools/test_ingest.ps1` (requires the existing ignored TinyCC installation).
+Prepared/ready recovery is implemented; physical power-loss durability remains
+unproven. Unreceipted orphan payloads are preserved for manual inspection, not
+automatically salvaged. See MEDIA_ARCHIVE.md for limitations and bench procedure.
+
+Power controller tests PASS, including final-OFF gate: no automatic backend after
+manual cancellation/timeout or failed storage release; new cycle clears prior
+confirmation. Existing metadata/naming, group reconciliation, planner, queue JSON
+and queue I/O regressions PASS. Python logger's 3 tests PASS, distinguishing fast
+metadata skips, inbox staging, acquisition timing and local verified completion.
+No agent upload or physical camera-throughput test performed. Next: supervised
+indexing pass, unchanged fast repeat, then new camera content; measure RECEIVE
+elapsed time separately from human power waiting and offline PROCESS work.

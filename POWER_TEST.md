@@ -1,5 +1,14 @@
 # External USB power workflow — firmware 0.5.0
 
+0.8.0 receive-first update: use the current test in
+[MEDIA_ARCHIVE.md](MEDIA_ARCHIVE.md#first-bench-test). COPY/COPYALL also follow
+this power workflow. RECEIVE STORED is emitted while USB is acquired; local
+readback, metadata and renaming wait until final OFF. Do not wait for COPY VERIFIED
+before responding to final OFF. FAST indexed skips are now the default, with
+COPYMODE VERIFY for audits. The older detailed copy descriptions below are
+historical; wiring and manual OFF/ON acknowledgments still apply.
+
+
 0.7.0 update supersedes the naming notes below: archive filenames now carry
 PHOTO/VIDEO and size-based SD/HD flags, grouped by ESP and exact camera time.
 They can be reclassified as matching files arrive. HD requests use the archived

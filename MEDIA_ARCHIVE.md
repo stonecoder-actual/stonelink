@@ -1,8 +1,99 @@
-# Camera-independent filename tracking — firmware 0.7.0
+# Camera-independent filename tracking — firmware 0.8.0
 
 This supersedes 0.6.0's original/folder-based variant naming and JSON media
 sidecars. Filenames now carry the media identity, grouping fields and SD/HD flag.
 Camera folder names and original camera filenames do not determine pairing.
+
+## Receive-first pipeline (0.8.0)
+
+Collection now has two separate phases. While USB storage is acquired, the ESP
+only discovers source metadata, checks its small local indexes and receives new
+payloads into `/sd/stonelink/<prefix>/inbox`. It reads each received source file
+once, calculating CRC32/SHA-256 while writing. It checks size/mtime before and
+afterward, then flushes/fsyncs/closes the local payload and its integrity-protected
+receipt. `RECEIVE STORED` means durably staged, not independently readback-verified.
+Non-MP4/JPG/JPEG files are ignored without opening their payloads. A local worklist
+puts new/changed entries before previously indexed recovery or audit entries.
+
+USB is then unmounted/released. In MANUAL mode, immediately follow the final
+POWER ACTION: disconnect external +5 V, then send POWER OFF. Only afterward does
+the automatic backend read local media, verify the received checksums, extract
+camera timestamps, deduplicate, rename and reconcile SD/HD flags. This backend
+runs on the ESP's SD; no web server or camera connection is needed. It emits
+COPY VERIFIED or COPY SKIP verified with `phase=LOCAL_AFTER_RELEASE`. The overall
+COLLECT result follows local processing. Camera-sourced VBUS can remain despite
+external OFF; the ESP does not measure it or access USB during local processing.
+
+Commands:
+
+| Command | Meaning |
+| --- | --- |
+| COPYMODE FAST | Default after boot; skip known source fingerprints without media reads |
+| COPYMODE VERIFY | Receive all supported media, new entries first; audit/verify locally after release |
+| COPYMODE STATUS | Show the current RAM-only policy |
+| COLLECT COPY / COPYALL | Power workflow, receive, release, final OFF, local processing |
+| COPY /usb/path | Same workflow for one source file/subtree |
+| PROCESS | Release USB and retry pending local receipts; manually remove external +5 V first |
+
+FAST uses device prefix, case-insensitive ASCII source path, byte size and source
+modification time. It checks CRC-protected index records, a ready-asset record,
+and local archive presence/size; it does **not** checksum old payloads or parse
+old metadata. A still-pending durable inbox receipt can also skip re-receiving a
+complete file. Small record/directory reads still occur, so this is not zero I/O.
+A replacement with identical path/size/mtime or same-size archive corruption can
+be missed. Use VERIFY for an intentional integrity audit. Detection of different
+bytes under an identical source fingerprint creates a conflict marker disabling
+FAST for that fingerprint rather than silently overwriting its evidence. HD
+requests/NEXT still fully verify their selected local target.
+
+Private `source_index` and `asset_index` directories accelerate acquisition;
+filenames remain the media/group identity for users and future clients. Indexes
+are CRC-validated fixed-schema binary records, published through synced/readback
+stages. Invalid/missing indexes or destinations trigger reception/recovery.
+Firmware 0.7 archives have no source index, so the first 0.8 pass must read them
+once and deduplicate locally. Existing HD queue state is retained.
+
+### First bench test
+
+1. Upload 0.8.0, send SOAK OFF, SCHEDULE OFF, POWER MODE MANUAL, SDMOUNT,
+   then COPYMODE FAST. Start outside the camera if convenient for the one-time
+   indexing pass; do not format either card.
+2. Run COLLECT COPY. Follow OFF/ON prompts as before. Expect RECEIVE STORED.
+   Follow final OFF promptly, then wait for PROCESS complete and COLLECT SUCCESS.
+3. Repeat with unchanged source files. Expect received=0, fast_skipped=8 for the
+   previously tested eight-media dataset, and no old payload/metadata hash work.
+   Compare `RECEIVE complete ... elapsed_ms` with the old 96.25-second skip phase;
+   manual power waiting is separate from this measurement.
+4. Capture new content, wait for recording to finish and repeat. Only new content
+   should be received; metadata extraction and MEDIA FLAG renames appear after
+   final OFF. Confirm local normalized names with SDSCAN and open sample media
+   independently on a PC before relying on the archive.
+5. Optional: COPYMODE VERIFY, then another collection, performs a full audit.
+   Return to COPYMODE FAST for the routine short acquisition window.
+
+### Interrupted work and limits
+
+Completed inbox receipts are independent: an interrupted later source transfer
+does not discard earlier files. Local processing runs after a failed acquisition
+if source cleanup and final OFF complete; the overall collection still reports
+FAILED. Cancel/timeout without final OFF defers processing; disconnect external
++5 V, then run PROCESS. After reboot, SDMOUNT and PROCESS recover valid pending
+receipts without USB. Nothing is automatically formatted or deleted on source.
+
+Prepared/ready records allow recovery if a payload rename occurred before its
+receipt was retired. Local checksum failures preserve payloads and quarantine
+the receipt as `.receipt.bad`; corrupt archives are preserved for manual repair.
+Incomplete `.receiving.part` may be replaced on a later acquisition. A payload
+whose receipt could not be published is retained but is not automatically
+recoverable by PROCESS; preserve it for inspection. FAT/exFAT power-loss atomicity
+is not guaranteed. Only independently verified duplicate local inbox payloads
+and completed receipt files are cleaned up. Source deletion remains disabled.
+
+CRC uses the ESP ROM routine and hash/copy loops yield periodically rather than
+a fixed delay per buffer. Host tests prove read ordering/counts and offline
+processing; actual throughput and camera interruption recovery still require
+physical bench measurements. One pass plus unchanged size/mtime does not prove
+that a camera did not rewrite content while it was being read.
 
 ## Filename and grouping rules
 
