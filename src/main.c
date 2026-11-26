@@ -372,7 +372,13 @@ static void command(char *line) {
     if(power_cycle_busy() && strcasecmp(line,"POWER") && strcasecmp(line,"STATUS") && strcasecmp(line,"HELP") && !soak_control) {
         LOG("Power workflow active; use POWER STATUS, POWER OFF/ON, POWER CANCEL or SOAK OFF"); return;
     }
-    if (!strcasecmp(line,"HELP")) LOG("HELP | STATUS | POWER [STATUS|MODE MANUAL|MODE GPIO|OFF|ON|CANCEL] | COLLECT [PLAN|COPY] | SCAN | READ /usb/path | RESET | REINIT | RETRY | WATCH [ON|OFF] | PLAN [RESET] | SCHEDULE [ON|OFF|NOW|STATUS|EVERY seconds] | SDMOUNT | SDSTATUS | SDSCAN | COPY /usb/file | COPYALL | SOAK [ON|COPY|OFF|STATUS|NOW|EVERY seconds]");
+    if (!strcasecmp(line,"HELP")) LOG("HELP | STATUS | DEVICE | META /usb/path | HD [SHOW filename_or_capture_id|LIST|NEXT|REQUEST filename_or_capture_id|CANCEL request_id|RETRY request_id] | POWER [STATUS|MODE MANUAL|MODE GPIO|OFF|ON|CANCEL] | COLLECT [PLAN|COPY] | SCAN | READ /usb/path | RESET | REINIT | RETRY | WATCH [ON|OFF] | PLAN [RESET] | SCHEDULE [ON|OFF|NOW|STATUS|EVERY seconds] | SDMOUNT | SDSTATUS | SDSCAN | COPY /usb/file | COPYALL | SOAK [ON|COPY|OFF|STATUS|NOW|EVERY seconds]");
+    else if(!strcasecmp(line,"HD")) local_storage_hd(arg);
+    else if(!strcasecmp(line,"DEVICE")) local_storage_identity();
+    else if(!strcasecmp(line,"META")) {
+        if(arg && *arg) local_storage_metadata(arg,source_available);
+        else LOG("Use META /usb/path/to/file.mp4 (or .jpg/.jpeg)");
+    }
     else if(!strcasecmp(line,"POWER")) {
         int64_t now=esp_timer_get_time()/1000;
         if(!arg || !*arg || !strcasecmp(arg,"STATUS")) power_status();
@@ -441,7 +447,8 @@ void app_main(void) {
     int input_flags = fcntl(STDIN_FILENO, F_GETFL);
     if (input_flags >= 0) fcntl(STDIN_FILENO, F_SETFL, input_flags | O_NONBLOCK);
     LOG("StoneLink USB diagnostics; timestamps are boot milliseconds; external supply power workflow available");
-    LOG("BOOT version=0.5.0 reset_reason=%d",esp_reset_reason());
+    LOG("BOOT version=0.7.0 reset_reason=%d",esp_reset_reason());
+    local_storage_identity();
     power_cycle_init(power_drive,power_notice);
     power_status();
     soak_load();

@@ -1,4 +1,5 @@
 #include "collection.h"
+#include "media_filter.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,14 +33,6 @@ static unsigned attempt;
 static int64_t interval_ms=DEFAULT_INTERVAL_MS, next_ms;
 static const char *last_result="none";
 
-static bool is_media(const char *name)
-{
-    const char *ext=strrchr(name, '.');
-    return ext && (!strcasecmp(ext,".jpg") || !strcasecmp(ext,".jpeg") ||
-                   !strcasecmp(ext,".mp4") || !strcasecmp(ext,".avi") ||
-                   !strcasecmp(ext,".mov") || !strcasecmp(ext,".png"));
-}
-
 // Version hint only; actual archival equality still requires full CRC checks.
 static uint64_t metadata_id(const media_file_t *file)
 {
@@ -70,7 +63,7 @@ static bool walk(const char *path, unsigned depth, media_file_t *snapshot,
         if(n<0 || n>=sizeof(child) || !available() || stat(child,&st)) { ok=false; break; }
         if(S_ISDIR(st.st_mode)) {
             if(!walk(child,depth+1,snapshot,count,available)) { ok=false; break; }
-        } else if(S_ISREG(st.st_mode) && is_media(child)) {
+        } else if(S_ISREG(st.st_mode) && media_file_supported(child)) {
             if(*count==MAX_FILES) {
                 ESP_LOGE(TAG,"PLAN exceeds %u media files; previous baseline preserved",MAX_FILES); ok=false; break;
             }

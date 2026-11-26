@@ -34,6 +34,9 @@ class LogEvents(unittest.TestCase):
             "I (3) stonelink: POWER STATUS mode=MANUAL": "power_status",
             "I (3) stonelink: COLLECT end=1 result=SUCCESS": "collect_success",
             "I (3) stonelink: COLLECT end=2 result=FAILED": "collect_failed",
+            "I (3) local_sd: DEVICE prefix=ESP-AABBCCDDEEFF": "device_identity",
+            "I (3) local_sd: META source=/usb/file.mp4 camera_datetime=2026-11-26 14:30:05": "capture_metadata",
+            "I (3) local_sd: CATALOG VERIFIED path=/sd/file.json": "catalog_verified",
         }
         for line, expected in cases.items():
             with self.subTest(line=line):

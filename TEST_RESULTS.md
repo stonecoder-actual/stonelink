@@ -411,3 +411,52 @@ cycles, then verified local copies and actual switch testing while present.
 
 Earlier test history follows.
 
+# Firmware 0.5.1 media-only collection
+
+User requested MP4/JPEG only. Shared case-insensitive .mp4/.jpg/.jpeg allowlist
+now gates both production planner and all copy entry points. Non-media regular
+files return without source hashing or archive writes; summary adds ignored=N,
+leaving skipped=N for verified existing media. Existing archives are retained.
+Planner regression with mixed-case JPEG/MP4 and excluded DAT/AVI/MOV/PNG,
+double-extension and extensionless fixtures passes. Hardware validation follows
+upload; expected unchanged repeat of the supplied 10-file batch is copied=0
+skipped=8 ignored=2, assuming those eight media files/archive copies are unchanged.
+PlatformIO 0.5.1 build SUCCESS: 408,072 flash bytes / 27,384 static RAM bytes.
+No upload performed. git diff --check passes.
+
+Preceding user-supplied 0.5.0 hardware test confirmed local SD mount (~62.5 GB),
+all ten source files copied/CRC-verified (four originals, four cell_std videos,
+two 45-byte DAT files), final external supply OFF confirmation and COLLECT
+SUCCESS. Copy/verification elapsed 192.99 seconds for 15,570,785 bytes. This was
+outside camera, not an installed-camera recovery test or independent playback.
+
+# Firmware 0.6.0 ESP prefix / camera-clock archive
+
+Implemented factory eFuse base MAC prefix (all 48 bits), no random or user-named
+identity. New archive names start with prefix then camera calendar date/time;
+variant/source basename/full SHA-256 disambiguate assets. JPEG EXIF original or
+digitized dates and MP4 v0/v1 movie/track creation dates are parsed with bounded
+random access; compressed media is not decoded. No timezone or ESP clock
+substitution. Missing metadata is explicit UNKNOWN, filesystem mtime separate.
+JSON sidecars are fsynced/read-back/published after verified media; missing
+records can be repaired on verified repeat, incompatible existing records fail
+without overwrite. Previous archive layout stays in place. DEVICE/META and host
+log classifications added; no web server or remote registry implemented.
+
+Final PlatformIO 0.6.0 build SUCCESS: 427,036 flash / 31,576 static RAM bytes.
+Firmware SHA256 ff0802a3ba624cc917486412c1b4b93678f27250969788ace329e18c26d7886e.
+Final ELF has 26 wrapped FatFs write calls and one original-dispatch call through
+the existing local-drive guard. Source writes remain blocked.
+
+Host parser/naming test PASS: II/MM EXIF, date precedence, invalid leap day,
+invalid offsets/IFD counts, all truncation points, MP4 32/64-bit dates including
+2050, track fallback, extended atoms, skipped mdat data, missing dates, stable
+and different ESP prefixes, variant/content collision separation, length bounds,
+JSON escaping and 1,000 deterministic malformed inputs. Production planner and
+power policy regressions PASS; logger 3 tests PASS. git diff --check passes.
+No upload or hardware metadata/copy test performed by agent. Actual camera tag
+availability, date-vs-overlay agreement, JSON publication/recovery on physical
+SD and end-to-end SHA verified repeat still require the MEDIA_ARCHIVE.md bench
+test. Compiler initially rejected a date-format range inference; explicit day
+bounds fixed the warning, and final build has no such error.
+

@@ -1,6 +1,14 @@
 # StoneLink media collector
 
-ESP32-S3 USB host experiment for the SPYPOINT CL-CBL adapter, with verified local FAT32/exFAT archiving. Firmware 0.5.0 adds a shared external USB power workflow for one-shot collection, scheduling and soak tests. Default MANUAL mode pauses for human power confirmations; opt-in GPIO mode controls a suitable active-high switch on GPIO21. Source deletion and radio transmission remain unimplemented. Real-card and automatic-switch validation remain bench work.
+Firmware 0.6.0 adds factory-MAC ESP prefixes, camera-clock date/time archive
+filenames, SHA-256 integrity and JSON metadata records for later web ingestion.
+See [MEDIA_ARCHIVE.md](MEDIA_ARCHIVE.md) for the current naming/date policy and
+DEVICE/META test. Camera clock values are not timezone-converted. Missing dates
+are labeled UNKNOWN. Older archive layouts below describe earlier releases.
+
+ESP32-S3 USB host experiment for the SPYPOINT CL-CBL adapter, with verified local FAT32/exFAT archiving. Media collection accepts only MP4 and JPEG files (.mp4/.jpg/.jpeg, case-insensitive), using the shared external USB power workflow for one-shot collection, scheduling and soak tests. Default MANUAL mode pauses for human power confirmations; opt-in GPIO mode controls a suitable active-high switch on GPIO21. Source deletion and radio transmission remain unimplemented. Automatic-switch validation remains bench work.
+
+The media allowlist applies to COPY, COPYALL, COLLECT COPY, SOAK COPY and PLAN/SCHEDULE inventories. Other regular files are ignored before hashing or copying and counted as ignored=N, separately from skipped=N (already verified media). Existing archived non-media files are retained; the filter never deletes them. Firmware-generated local logs and staging files are unaffected.
 
 Start with [POWER_TEST.md](POWER_TEST.md) for the current manual-power test, commands and future switch wiring. Versioned sections below record earlier behavior; 0.5.0 power/scheduler behavior supersedes their no-power-control descriptions.
 
@@ -35,11 +43,11 @@ COPY /usb/cell_std/100MEDIA/DSCF0001.JPG
 ```
 
 5. Expect `COPY VERIFIED` with source, destination, bytes and CRC32. Run the same command again: expect `COPY SKIP verified` after checksumming both source and existing archive.
-6. `SDSCAN` lists local copies. Later use `COPYALL` to recursively archive regular files from /usb, including videos and camera metadata. Empty directories are not archived. Traversal is bounded to 16 directory levels and 767-byte generated paths; failures abort the batch explicitly.
+6. `SDSCAN` lists local copies. Use `COPYALL` to recursively archive MP4/JPEG files from /usb. Other file extensions are ignored. Empty directories are not archived. Traversal is bounded to 16 directory levels and 767-byte generated paths; failures abort the batch explicitly.
 
 ## Copy behavior
 
-Only explicit COPY/COPYALL commands create archive files. Nothing copies automatically on mount. Files live under `/sd/stonelink/<CRC32>_<bytes>/<source path below /usb>`. This records source path/length/checksum and keeps different contents if the camera reuses names. CRC32 is a diagnostic checksum, not a cryptographic content identifier. Existing archive files that fail verification are preserved and reported, not overwritten.
+COPY/COPYALL, COLLECT COPY and enabled SOAK COPY create archives; mounting alone never copies. New media lives under `/sd/stonelink/<ESP-prefix>/<camera-date>/`, with prefix/date/time/variant/original-name/SHA256 filenames and verified JSON records. Missing dates are explicit UNKNOWN values. Existing media must match size, CRC32 and SHA256 before a verified skip; incompatible records/files are preserved and fail the batch. Older CRC-directory archives remain in place without automatic migration. See MEDIA_ARCHIVE.md for the naming and time policy.
 
 A new file is first checksummed from source, then read again into reserved `/sd/stonelink/.incoming.part`. Stream checksum and source size/mtime must remain consistent. Destination is flushed/fsynced/closed, reopened and fully checksummed, renamed to its archive path, then reopened/checked again. Only then is COPY VERIFIED logged. On failure the batch stops and the USB mount is released; the next copy overwrites the reserved partial staging file. Completed files from earlier in the batch remain. FAT power-loss recovery is not guaranteed: after reboot existing archive files are reverified before skipping. This is why source deletion remains disabled.
 
@@ -56,6 +64,8 @@ The original 0.1.0 guard rejected every drive write. Version 0.2.0 deliberately 
 | Command | Behavior |
 | --- | --- |
 | HELP / STATUS | USB state and command list |
+| DEVICE | Stable factory-MAC ESP prefix |
+| META /usb/path | Inspect JPEG/MP4 camera time without copying; mounted source required |
 | SCAN | List USB source |
 | READ /usb/path | CRC32/ISO-HDLC; no path selects first discovered JPEG |
 | WATCH ON / OFF | Status/serialized sector-zero probe; does not control mount retries |
@@ -66,7 +76,7 @@ The original 0.1.0 guard rejected every drive write. Version 0.2.0 deliberately 
 | SDSTATUS | Local mount state and total/free filesystem bytes |
 | SDSCAN | List local card |
 | COPY /usb/path | Verified archive of a regular source file or subtree |
-| COPYALL | Verified archive of all regular source files |
+| COPYALL | Verified archive of MP4/JPG/JPEG source files; ignores other extensions |
 | COLLECT PLAN / COPY | Power-cycle workflow followed by metadata scan or verified archive, then release |
 | POWER STATUS / MODE MANUAL / MODE GPIO | Inspect workflow or explicitly select human/GPIO21 power control |
 | POWER OFF / ON / CANCEL | Acknowledge manual prompts or abort the workflow |

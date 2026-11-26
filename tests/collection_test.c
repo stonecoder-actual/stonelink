@@ -86,10 +86,16 @@ int main(void)
 
     // Known files plus a nonmedia file: first baseline, unchanged repeat.
     add("/usb/DCIM",1,0,0); add("/usb/DCIM/100MEDIA",1,0,0);
-    add("/usb/DCIM/100MEDIA/A.JPG",2,100,10);
-    add("/usb/DCIM/100MEDIA/B.MP4",2,200,20);
+    add("/usb/DCIM/100MEDIA/A.JpEg",2,100,10);
+    add("/usb/DCIM/100MEDIA/B.mP4",2,200,20);
     add("/usb/DCIM/sync0.dat",2,46,20);
     add("/usb/cell_std",1,0,0); add("/usb/cell_std/A.JPG",2,30,10);
+    // Only MP4/JPG/JPEG enter a snapshot, including mixed-case extensions.
+    add("/usb/DCIM/100MEDIA/OTHER.AVI",2,1000,10);
+    add("/usb/DCIM/100MEDIA/OTHER.mov",2,1000,10);
+    add("/usb/DCIM/100MEDIA/OTHER.PNG",2,1000,10);
+    add("/usb/DCIM/100MEDIA/OTHER.JPG.tmp",2,1000,10);
+    add("/usb/DCIM/100MEDIA/no_extension",2,1000,10);
     assert(collection_plan(available)); expect("files=3"); expect("first_baseline=1"); expect("cell_std_bytes=30");
     assert(collection_plan(available)); expect("new=0 changed=0 unchanged=3 missing=0");
 

@@ -1,6 +1,17 @@
 # Roadmap
 
-## Current: firmware 0.5.0
+## Current: firmware 0.6.0
+
+Added factory-base-MAC ESP prefix, camera-clock EXIF/MP4 timestamps with no
+timezone conversion, human-readable archive filenames, SHA-256 collision and
+integrity checks, persistent JSON records, DEVICE/META commands and host log
+classification. Missing/unsupported dates are labeled UNKNOWN. See
+MEDIA_ARCHIVE.md. Software build/tests pass; next inspect real camera metadata,
+verify new-layout copy/repeat/catalog behavior and independent playback. Web
+ingestion/registry, indexes spanning old archive layouts and radio transport
+remain future work.
+
+## Firmware 0.5.0 power workflow
 
 Implemented a common external-supply cycle for COLLECT PLAN/COPY, SCHEDULE and
 SOAK, with default human OFF/ON acknowledgments and opt-in GPIO21 high-side

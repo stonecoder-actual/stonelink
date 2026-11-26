@@ -31,6 +31,8 @@ def classify(line):
         ("POWER ACTION", "power_action"), ("POWER TIMEOUT", "power_timeout"),
         ("POWER ERROR", "power_error"), ("POWER CANCELED", "power_canceled"),
         ("POWER STATUS", "power_status"),
+        ("CATALOG VERIFIED", "catalog_verified"), ("META source=", "capture_metadata"),
+        ("DEVICE prefix=", "device_identity"),
     ]:
         if text in line:
             return kind
@@ -79,7 +81,8 @@ def main():
         def record(kind, line):
             counts[kind] += 1
             if kind in ("boot", "health", "cycle_success", "cycle_failed", "copy_verified",
-                        "collect_success", "collect_failed", "power_action", "power_status"):
+                        "collect_success", "collect_failed", "power_action", "power_status",
+                        "device_identity", "capture_metadata", "catalog_verified"):
                 latest[kind] = line
             stamp = timestamp()
             events.write(json.dumps({"utc": stamp, "kind": kind, "text": line})+"\n")

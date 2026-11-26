@@ -1,5 +1,15 @@
 # External USB power workflow — firmware 0.5.0
 
+0.6.0 update: power procedures are unchanged. New copies use factory-MAC ESP
+prefixes, embedded camera dates, SHA-256 and JSON records; see MEDIA_ARCHIVE.md.
+Old CRC-layout copies remain and are not automatically migrated. First copy
+under the new layout may copy again before future repeats can verify/skip it.
+
+0.5.1 update: discovery and copying accept only .mp4, .jpg and .jpeg, ignoring
+case. Non-media files such as sync0.dat are ignored before checksum reads and
+reported as ignored=N; skipped=N still means verified existing media. Existing
+archived non-media files are retained. Power/manual procedures below are unchanged.
+
 COLLECT, SCHEDULE and SOAK now share an external-supply cycle. This supersedes
 the 0.4.0 soak's acquisition-only behavior. The ESP has no camera recording or
 standby sensor: start bench cycles after recording finishes. Motion during
@@ -73,7 +83,7 @@ power cycle. Source files remain write-protected throughout.
 ## Copy and scheduling
 
 Verify a known good destination with SDMOUNT/SDSTATUS before COLLECT COPY. It
-archives regular files under /usb using the existing CRC/size verification,
+archives supported MP4/JPEG files under /usb using the existing CRC/size verification,
 staging, fsync, reopen and verified-skip policy. No camera files are deleted.
 Local mount failure ends the cycle before any power request. Independently open
 a copied image/video on a PC before relying on the archive.
